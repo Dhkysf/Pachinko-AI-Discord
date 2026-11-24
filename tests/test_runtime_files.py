@@ -10,6 +10,7 @@ import threading
 import unittest
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from unittest.mock import patch
 
 from core.runtime import (
     LOG_BACKUP_COUNT,
@@ -107,6 +108,28 @@ class TestRuntimeFiles(unittest.TestCase):
             self.assertEqual(errors, [])
             final = json.loads(status_path.read_text(encoding="utf-8"))
             self.assertTrue(required.issubset(final.keys()))
+
+    def test_write_status_permission_error_logs_and_cleans_tmp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            status_path = tmp_dir / "status.json"
+            with (
+                patch("core.runtime.os.replace", side_effect=PermissionError("locked")) as mock_replace,
+                patch("core.runtime.time.sleep", return_value=None),
+                self.assertLogs("pachinko.runtime", level="WARNING") as cm,
+            ):
+                write_status(
+                    status_path,
+                    state="running",
+                    started=1000,
+                    discord_ready=True,
+                    voice_sessions=1,
+                    llm_ok=True,
+                )
+
+            self.assertEqual(mock_replace.call_count, 20)
+            self.assertTrue(any("Failed to write status file" in msg for msg in cm.output))
+            self.assertEqual(list(tmp_dir.iterdir()), [])
 
     def test_setup_logging_creates_rotating_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

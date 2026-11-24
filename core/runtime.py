@@ -22,6 +22,8 @@ LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_BACKUP_COUNT = 3
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
+log = logging.getLogger("pachinko.runtime")
+
 
 def setup_logging(log_dir: Path) -> RotatingFileHandler:
     """Configure root logging to console and rotating UTF-8 file without removing existing filters."""
@@ -63,16 +65,19 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     data = json.dumps(payload, ensure_ascii=False)
     try:
         tmp.write_text(data, encoding="utf-8")
-        for attempt in range(5):
+        for attempt in range(20):
             try:
                 os.replace(tmp, path)
                 return
             except PermissionError:
-                if attempt == 4:
+                if attempt == 19:
                     raise
-                time.sleep(0.01)
-    except Exception:
-        tmp.unlink(missing_ok=True)
+                time.sleep(min(0.05, 0.01 * (attempt + 1)))
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
 
 
@@ -168,18 +173,21 @@ def write_status(
     ollama_model: str = "",
 ) -> None:
     """Atomically write runtime status.json for the desktop control app."""
-    atomic_write_json(
-        status_path,
-        {
-            "state": state,
-            "pid": os.getpid(),
-            "started": int(started),
-            "discord_ready": bool(discord_ready),
-            "voice_sessions": int(voice_sessions),
-            "llm_ok": bool(llm_ok),
-            "ollama_model": ollama_model,
-        },
-    )
+    try:
+        atomic_write_json(
+            status_path,
+            {
+                "state": state,
+                "pid": os.getpid(),
+                "started": int(started),
+                "discord_ready": bool(discord_ready),
+                "voice_sessions": int(voice_sessions),
+                "llm_ok": bool(llm_ok),
+                "ollama_model": ollama_model,
+            },
+        )
+    except Exception as exc:
+        log.warning("Failed to write status file %s: %s", status_path, exc)
 
 
 def remove_status(status_path: Path) -> None:

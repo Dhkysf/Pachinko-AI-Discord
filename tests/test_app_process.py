@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from app.process import (
     STATE_ALREADY_RUNNING,
@@ -206,6 +207,75 @@ class TestAppProcessManager(unittest.TestCase):
         self.assertTrue(loaded["start_bot_on_open"])
         self.assertFalse(loaded["minimize_to_tray_on_close"])
         self.assertFalse(loaded["auto_restart_on_crash"])
+
+    def test_status_read_hiccups_keep_last_status(self) -> None:
+        mgr = BotProcessManager(self.repo_root, data_dir=self.tmp_dir, bot_cmd=self._cmd("normal"))
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = None
+        fake_proc.pid = 42424
+        mgr._proc = fake_proc
+
+        mgr.run_dir.mkdir(parents=True, exist_ok=True)
+        mgr.status_path.write_text(
+            json.dumps(
+                {
+                    "state": "running",
+                    "pid": 42424,
+                    "started": int(time.time()) - 10,
+                    "discord_ready": True,
+                    "voice_sessions": 2,
+                    "llm_ok": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        st0 = mgr.poll()
+        self.assertEqual(st0.state, STATE_RUNNING)
+        self.assertTrue(st0.discord_ready)
+        self.assertEqual(st0.voice_sessions, 2)
+        self.assertTrue(st0.llm_ok)
+
+        real_read_text = Path.read_text
+        calls = 0
+
+        def transient_perm_error(path_self: Path, *args, **kwargs):
+            nonlocal calls
+            if path_self == mgr.status_path and calls == 0:
+                calls += 1
+                raise PermissionError("locked")
+            return real_read_text(path_self, *args, **kwargs)
+
+        with (
+            patch("app.process.time.sleep", return_value=None),
+            patch.object(Path, "read_text", autospec=True, side_effect=transient_perm_error),
+        ):
+            st_retry = mgr.poll()
+        self.assertEqual(calls, 1)
+        self.assertEqual(st_retry.state, STATE_RUNNING)
+        self.assertTrue(st_retry.discord_ready)
+
+        with (
+            patch("app.process.time.sleep", return_value=None),
+            patch.object(Path, "read_text", side_effect=PermissionError("locked")),
+        ):
+            st_perm = mgr.poll()
+        self.assertEqual(st_perm.state, STATE_RUNNING)
+        self.assertTrue(st_perm.discord_ready)
+        self.assertEqual(st_perm.voice_sessions, 2)
+        self.assertTrue(st_perm.llm_ok)
+
+        mgr.status_path.unlink()
+        with patch("app.process.time.sleep", return_value=None):
+            st_missing = mgr.poll()
+        self.assertEqual(st_missing.state, STATE_RUNNING)
+        self.assertTrue(st_missing.discord_ready)
+
+        mgr.status_path.write_text("{broken", encoding="utf-8")
+        with patch("app.process.time.sleep", return_value=None):
+            st_bad_json = mgr.poll()
+        self.assertEqual(st_bad_json.state, STATE_RUNNING)
+        self.assertTrue(st_bad_json.discord_ready)
 
 
 if __name__ == "__main__":

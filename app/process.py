@@ -208,16 +208,24 @@ class BotProcessManager:
         self._proc: subprocess.Popen[bytes] | None = None
         self._stopping = False
         self._stop_requested = False
+        self._last_status = None
         self._terminal_state = STATE_STOPPED
         self._last_exit_code: int | None = None
+        self._last_status: BotStatus | None = None
         self._restart_timestamps: list[float] = []
 
-    def _read_json(self, path: Path) -> dict[str, Any] | None:
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            return raw if isinstance(raw, dict) else None
-        except (OSError, ValueError, TypeError):
-            return None
+    def _read_json(self, path: Path, *, retry: bool = False) -> dict[str, Any] | None:
+        attempts = 2 if retry else 1
+        for attempt in range(attempts):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    return raw
+            except (PermissionError, FileNotFoundError, OSError, ValueError, TypeError):
+                pass
+            if attempt == 0 and attempts > 1:
+                time.sleep(0.05)
+        return None
 
     def _read_live_lock_pid(self) -> tuple[int | None, int | None]:
         data = self._read_json(self.lock_path)
@@ -234,6 +242,7 @@ class BotProcessManager:
         self.stop_path.unlink(missing_ok=True)
         self._stopping = False
         self._stop_requested = False
+        self._last_status = None
         env = os.environ.copy()
         model = self.ollama_model.strip()
         if model:
@@ -347,6 +356,7 @@ class BotProcessManager:
                 self._proc = None
                 self._terminal_state = STATE_STOPPED
                 self._last_exit_code = None
+                self._last_status = None
                 self.stop_path.unlink(missing_ok=True)
                 self.status_path.unlink(missing_ok=True)
                 lock_data = self._read_json(self.lock_path)
@@ -371,7 +381,7 @@ class BotProcessManager:
         return self.start()
 
     def _status_from_file(self, expected_pid: int | None, default_state: str, *, external: bool) -> BotStatus:
-        data = self._read_json(self.status_path)
+        data = self._read_json(self.status_path, retry=True)
         if data and (expected_pid is None or data.get("pid") == expected_pid):
             raw_state = str(data.get("state", "")).lower()
             state = STATE_STOPPING if self._stopping else _STATUS_MAP.get(raw_state, default_state)
@@ -379,7 +389,7 @@ class BotProcessManager:
             started_int = started if isinstance(started, int) else None
             uptime = max(0, int(time.time()) - started_int) if started_int is not None else 0
             pid = data.get("pid") if isinstance(data.get("pid"), int) else expected_pid
-            return BotStatus(
+            status = BotStatus(
                 state=state,
                 external=external,
                 pid=pid,
@@ -390,6 +400,25 @@ class BotProcessManager:
                 voice_sessions=int(data.get("voice_sessions", 0) or 0),
                 ollama_model=str(data.get("ollama_model", "") or ""),
             )
+            self._last_status = status
+            return status
+
+        prev = self._last_status
+        if prev is not None and (expected_pid is None or prev.pid == expected_pid):
+            state = STATE_STOPPING if self._stopping else prev.state
+            uptime = max(0, int(time.time()) - prev.started) if prev.started is not None else prev.uptime
+            return BotStatus(
+                state=state,
+                external=external,
+                pid=prev.pid if prev.pid is not None else expected_pid,
+                started=prev.started,
+                uptime=uptime,
+                discord_ready=prev.discord_ready,
+                llm_ok=prev.llm_ok,
+                voice_sessions=prev.voice_sessions,
+                ollama_model=prev.ollama_model,
+            )
+
         state = STATE_STOPPING if self._stopping else default_state
         return BotStatus(state=state, external=external, pid=expected_pid)
 
@@ -404,6 +433,7 @@ class BotProcessManager:
                 # Managed process has exited.
                 self._proc = None
                 self._last_exit_code = rc
+                self._last_status = None
                 was_stop_requested = self._stop_requested
                 self._stopping = False
                 self._stop_requested = False
@@ -458,4 +488,5 @@ class BotProcessManager:
                 self._stop_requested = False
                 self._terminal_state = STATE_STOPPED
 
+            self._last_status = None
             return BotStatus(state=self._terminal_state, exit_code=self._last_exit_code)
