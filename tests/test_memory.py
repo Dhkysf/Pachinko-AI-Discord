@@ -61,23 +61,32 @@ class TestMemoryManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("kopi", notes[0]["fact"].lower())
 
-    # BUG: pattern requires "suka banget" and misses plain "aku suka kopi"
-    @unittest.expectedFailure
     async def test_auto_capture_saves_plain_aku_suka_kopi(self) -> None:
         await self.mem.auto_capture_user_facts("u1", "Budi", "aku suka kopi")
+        await self.mem.auto_capture_user_facts("u1", "Budi", "gue suka ramen")
+        await self.mem.auto_capture_user_facts("u1", "Budi", "aku nggak suka kopi")
         notes = await self.mem.get_notes("person:u1")
-        self.assertEqual(len(notes), 1)
+        facts = [n["fact"].lower() for n in notes]
+        self.assertEqual(len(facts), 3)
+        self.assertIn("suka/hobi: kopi", facts)
+        self.assertIn("suka/hobi: ramen", facts)
+        self.assertIn("kurang suka/hindari: kopi", facts)
 
     async def test_auto_capture_ignores_other_person_and_question_about_bot(self) -> None:
         await self.mem.auto_capture_user_facts("u1", "Andi", "si Budi suka kucing")
         await self.mem.auto_capture_user_facts("u1", "Andi", "si Budi suka banget kucing")
         await self.mem.auto_capture_user_facts("u1", "Andi", "kamu suka apa?")
+        await self.mem.auto_capture_user_facts("u1", "Andi", "kamu suka kopi")
         self.assertEqual(await self.mem.get_notes("person:u1"), [])
 
-    # BUG: questions ending in '?' still match and get saved as facts
-    @unittest.expectedFailure
     async def test_auto_capture_ignores_question_or_joke(self) -> None:
-        await self.mem.auto_capture_user_facts("u1", "Andi", "aku suka banget dimarahin ya?")
+        for q in (
+            "aku suka banget dimarahin ya?",
+            "aku suka kopi gak?",
+            "aku suka kopi kan?",
+            "aku suka kopi nggak?",
+        ):
+            await self.mem.auto_capture_user_facts("u1", "Andi", q)
         self.assertEqual(await self.mem.get_notes("person:u1"), [])
 
     async def test_recall_ranks_relevant_first_respects_scope_and_handles_fts5_keywords(self) -> None:

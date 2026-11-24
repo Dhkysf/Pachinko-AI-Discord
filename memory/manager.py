@@ -215,9 +215,12 @@ class MemoryManager:
 
     async def auto_capture_user_facts(self, user_id: str, user_name: str, text: str) -> None:
         """Lightweight capture of explicit self-facts without extra LLM cost."""
+        stripped = text.strip()
+        if not stripped or stripped.endswith("?") or re.search(r"\bkamu\s+suka\b", stripped, re.IGNORECASE):
+            return
         patterns = [
             (r"\b(?:nama(?:ku| gue)|panggil (?:aku|gue))\s+([A-Za-z0-9_ -]{2,25})", "Minta dipanggil: {0}"),
-            (r"\b(?:aku|gue)\s+(?:suka banget|hobi|doyan)\s+([^.!?\n]{3,60})", "Suka/hobi: {0}"),
+            (r"\b(?:aku|gue)\s+(?:suka(?:\s+banget)?|hobi|doyan)\s+([^.!?\n]{3,60})", "Suka/hobi: {0}"),
             (r"\b(?:aku|gue)\s+(?:benci|nggak suka|alergi)\s+([^.!?\n]{3,60})", "Kurang suka/hindari: {0}"),
             (r"\b(?:aku|gue)\s+(?:kuliah|kerja|sekolah)\s+(?:di|ambil|sebagai)\s+([^.!?\n]{3,60})", "Aktivitas/latar: {0}"),
         ]

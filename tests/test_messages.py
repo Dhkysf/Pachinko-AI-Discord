@@ -2,10 +2,20 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
+import os
 import unittest
+from unittest.mock import patch
 
 from brain.profile import CharacterProfile
-from brain.prompt import _LANGUAGE_RULE, _VOICE_EXTRA_RULES, assemble_messages
+from brain.prompt import (
+    _COMPACT_LANGUAGE_RULE,
+    _LANGUAGE_RULE,
+    _RUNNER_RULES,
+    _VOICE_EXTRA_RULES,
+    assemble_messages,
+)
+from config import AppConfig
 
 
 def _make_profile() -> CharacterProfile:
@@ -62,7 +72,8 @@ class TestAssembleMessages(unittest.TestCase):
             )
 
     def test_text_turn_strict_roles_and_content(self) -> None:
-        msgs = assemble_messages(**_make_args(modality="text"))
+        with patch("brain.prompt.config.llm_compact_prompt", False):
+            msgs = assemble_messages(**_make_args(modality="text"))
         self._assert_strict_roles(msgs)
 
         self.assertTrue(msgs[0]["content"].startswith(_LANGUAGE_RULE))
@@ -87,7 +98,8 @@ class TestAssembleMessages(unittest.TestCase):
         self.assertLess(content.index("<turn "), content.index("Halo Pachinko, lagi minum kopi ya?"))
 
     def test_voice_turn_strict_roles_and_content(self) -> None:
-        msgs = assemble_messages(**_make_args(modality="voice"))
+        with patch("brain.prompt.config.llm_compact_prompt", True):
+            msgs = assemble_messages(**_make_args(modality="voice"))
         self._assert_strict_roles(msgs)
 
         final_user = msgs[-1]
@@ -96,6 +108,100 @@ class TestAssembleMessages(unittest.TestCase):
         self.assertIn(_VOICE_EXTRA_RULES, content)
         self.assertIn("Halo Pachinko, lagi minum kopi ya?", content)
         self.assertLess(content.index("<style_note>"), content.index("Halo Pachinko, lagi minum kopi ya?"))
+        self.assertIn("1-2 kalimat, nyambung sama pesan terakhir. Kalau nggak ngerti slang-nya, tanya balik.", content)
+        self.assertTrue(content.endswith("Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu."))
+
+    def test_compact_prompt_default_and_structure(self) -> None:
+        env = dict(os.environ)
+        env.pop("LLM_COMPACT_PROMPT", None)
+        with patch.dict(os.environ, env, clear=True):
+            self.assertTrue(AppConfig().llm_compact_prompt)
+
+        with patch("brain.prompt.config.llm_compact_prompt", True):
+            msgs = assemble_messages(**_make_args(modality="text"))
+        self._assert_strict_roles(msgs)
+        self.assertTrue(msgs[0]["content"].startswith(_COMPACT_LANGUAGE_RULE))
+        all_text = "\n".join(m["content"] for m in msgs)
+        self.assertNotIn("<feel>", all_text)
+        self.assertNotIn("Bond:", all_text)
+        self.assertNotIn("Trust:", all_text)
+        self.assertNotIn("Warmth:", all_text)
+        self.assertNotIn("valence=", all_text)
+        self.assertNotIn("energy=", all_text)
+        self.assertIn("hubungan: teman ngobrol", all_text)
+        self.assertIn("mood: lagi seneng", all_text)
+        self.assertIn(
+            "Jawab sebagai Pachinko pakai bahasa Indonesia santai, 1-3 kalimat, nyambung sama pesan terakhir. Kalau nggak ngerti slang-nya, tanya balik.",
+            msgs[-1]["content"],
+        )
+        self.assertTrue(
+            msgs[-1]["content"].endswith("Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu.")
+        )
+
+    def test_legacy_prompt_byte_for_byte_when_compact_false(self) -> None:
+        args = _make_args(modality="text")
+        args["profile"].kaomoji = {"happy": ["(≧▽≦)"]}
+        fixed_now = dt.datetime(2026, 1, 15, 20, 30)
+
+        class _FixedDateTime:
+            @classmethod
+            def now(cls) -> dt.datetime:
+                return fixed_now
+
+        expected = [
+            {
+                "role": "system",
+                "content": (
+                    f"{_LANGUAGE_RULE}\n\n"
+                    "Kamu adalah Pachinko, AI yang ekspresif.\n\n"
+                    "Gaya bicara santai dan hangat.\n\n"
+                    f"{_RUNNER_RULES}\n\n"
+                    "# Server Owner Directives\nSelalu jawab singkat.\n\n"
+                    "<examples>\nUser: Halo\nPachinko: Hai juga!\n</examples>"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    '<data source="person_card" title="Budi">\n'
+                    "Name: Budi\n"
+                    "Relationship Status: Teman (Bond: 120.0/1000, Trust: 60/100, Warmth: +0.25)\n"
+                    "Impression: Ramah\n"
+                    "Notes about Budi:\n"
+                    "- Suka main game\n"
+                    "</data>\n\n"
+                    '<data source="recalled_memory" title="Recalled Memories">\n'
+                    "- Kemarin bahas musik\n"
+                    "</data>"
+                ),
+            },
+            {"role": "assistant", "content": "Oke, aku inget konteks lawan bicara dan catatan di atas."},
+            {"role": "user", "content": "[Budi]: Pagi Pachinko!"},
+            {"role": "assistant", "content": "Pagi juga Budi!"},
+            {
+                "role": "user",
+                "content": (
+                    "<now>\n"
+                    "Time: Thursday, 15 January 2026 20:30 | Channel: TEXT\n"
+                    "Pachinko's Mood: expression=happy, valence=+0.40, energy=0.70 (joy:0.60)\n"
+                    "</now>\n\n"
+                    "<style_note>\n"
+                    "Relevant info:\n"
+                    "- Pachinko suka kopi susu.\n"
+                    "Optional kaomoji (use sparingly, not in every sentence): (≧▽≦)\n"
+                    "</style_note>\n\n"
+                    '<turn reason="direct_mention">Reply directly as Pachinko without writing a \'[Pachinko]:\' prefix.</turn>\n\n'
+                    "[Budi]:\n"
+                    '<data source="chat Budi" title="text">\n'
+                    "Halo Pachinko, lagi minum kopi ya?\n"
+                    "</data>"
+                ),
+            },
+        ]
+
+        with patch("brain.prompt.config.llm_compact_prompt", False), patch("brain.prompt.dt.datetime", _FixedDateTime):
+            actual = assemble_messages(**args)
+        self.assertEqual(actual, expected)
 
     def test_system_message_byte_identical_between_turns(self) -> None:
         args1 = _make_args(modality="text", user_text="Halo")

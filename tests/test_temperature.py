@@ -93,6 +93,21 @@ class TestLLMTemperature(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("temperature", payloads["openai_once"])
             self.assertNotIn("temperature", payloads["openai_stream"])
 
+    async def test_compact_prompt_caps_text_num_predict_to_300(self) -> None:
+        cfg_compact = self._cfg_with_env(None)
+        cfg_compact.llm_compact_prompt = True
+        p_compact = await self._capture_payloads(cfg_compact)
+        self.assertEqual(p_compact["ollama_once"]["options"]["num_predict"], 300)
+        self.assertEqual(p_compact["ollama_stream"]["options"]["num_predict"], 280)
+        self.assertEqual(p_compact["openai_once"]["max_tokens"], 300)
+        self.assertEqual(p_compact["openai_stream"]["max_tokens"], 280)
+
+        cfg_legacy = self._cfg_with_env(None)
+        cfg_legacy.llm_compact_prompt = False
+        p_legacy = await self._capture_payloads(cfg_legacy)
+        self.assertEqual(p_legacy["ollama_once"]["options"]["num_predict"], 650)
+        self.assertEqual(p_legacy["openai_once"]["max_tokens"], 650)
+
     async def test_valid_temperature_sent_exact(self) -> None:
         cfg = self._cfg_with_env("0.6")
         self.assertEqual(cfg.llm_temperature, 0.6)
@@ -122,6 +137,21 @@ class TestLLMTemperature(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("temperature", payloads["ollama_stream"]["options"])
             self.assertNotIn("temperature", payloads["openai_once"])
             self.assertNotIn("temperature", payloads["openai_stream"])
+
+    async def test_compact_prompt_caps_text_num_predict_to_300(self) -> None:
+        cfg_compact = self._cfg_with_env(None)
+        cfg_compact.llm_compact_prompt = True
+        p_compact = await self._capture_payloads(cfg_compact)
+        self.assertEqual(p_compact["ollama_once"]["options"]["num_predict"], 300)
+        self.assertEqual(p_compact["ollama_stream"]["options"]["num_predict"], 280)
+        self.assertEqual(p_compact["openai_once"]["max_tokens"], 300)
+        self.assertEqual(p_compact["openai_stream"]["max_tokens"], 280)
+
+        cfg_legacy = self._cfg_with_env(None)
+        cfg_legacy.llm_compact_prompt = False
+        p_legacy = await self._capture_payloads(cfg_legacy)
+        self.assertEqual(p_legacy["ollama_once"]["options"]["num_predict"], 650)
+        self.assertEqual(p_legacy["openai_once"]["max_tokens"], 650)
 
 
 if __name__ == "__main__":

@@ -75,6 +75,7 @@ class AppConfig:
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:8b"))
     ollama_keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "15m"))
     llm_temperature: float | None = field(default_factory=lambda: _opt_float("LLM_TEMPERATURE", 0.0, 2.0))
+    llm_compact_prompt: bool = field(default_factory=lambda: _bool("LLM_COMPACT_PROMPT", True))
 
     openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", "lm-studio"))

@@ -436,7 +436,7 @@ class LLMClient:
             "think": False,  # Disable long chain-of-thought for instant replies
             "options": {
                 **_temperature_kw(),
-                "num_predict": 320 if fast_voice else 650,
+                "num_predict": 320 if fast_voice else (300 if config.llm_compact_prompt else 650),
             },
         }
         if tools and model not in self._no_tools_models:
@@ -485,7 +485,7 @@ class LLMClient:
             "think": False,
             "options": {
                 **_temperature_kw(),
-                "num_predict": 280 if fast_voice else 600,
+                "num_predict": 280 if fast_voice else (300 if config.llm_compact_prompt else 600),
             },
         }
         url = f"{config.ollama_base_url.rstrip('/')}/api/chat"
@@ -525,7 +525,7 @@ class LLMClient:
             "model": config.openai_model,
             "messages": normalize_messages(messages),
             **_temperature_kw(),
-            "max_tokens": 320 if fast_voice else 650,
+            "max_tokens": 320 if fast_voice else (300 if config.llm_compact_prompt else 650),
         }
         if tools:
             payload["tools"] = tools
@@ -549,7 +549,7 @@ class LLMClient:
             "model": config.openai_model,
             "messages": normalize_messages(messages),
             **_temperature_kw(),
-            "max_tokens": 280 if fast_voice else 600,
+            "max_tokens": 280 if fast_voice else (300 if config.llm_compact_prompt else 600),
             "stream": True,
         }
         headers = {"Authorization": f"Bearer {config.openai_api_key}"}
