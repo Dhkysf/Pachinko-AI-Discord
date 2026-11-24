@@ -22,6 +22,46 @@ log = logging.getLogger("llm")
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
+def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure at most one system message (at index 0) and no adjacent duplicate roles."""
+    out: list[dict[str, Any]] = []
+    pending_sys: list[str] = []
+
+    def _emit(role: str, content: str, extra: dict[str, Any] | None = None) -> None:
+        if out and out[-1]["role"] == role:
+            prev = out[-1]["content"]
+            out[-1]["content"] = f"{prev}\n\n{content}" if (prev and content) else (prev or content)
+            if extra:
+                for k, v in extra.items():
+                    if k not in ("role", "content"):
+                        out[-1][k] = v
+        else:
+            msg: dict[str, Any] = dict(extra) if extra else {}
+            msg["role"] = role
+            msg["content"] = content
+            out.append(msg)
+
+    for i, raw in enumerate(messages):
+        role = raw["role"]
+        content = raw.get("content") or ""
+        if role == "system":
+            if i == 0:
+                out.append({**raw, "role": "system", "content": content})
+            elif content:
+                pending_sys.append(content)
+            continue
+        if role == "user" and pending_sys:
+            prefix = "\n\n".join(pending_sys)
+            pending_sys.clear()
+            content = f"{prefix}\n\n{content}" if content else prefix
+        _emit(role, content, raw)
+
+    if pending_sys:
+        _emit("user", "\n\n".join(pending_sys))
+
+    return out
+
+
 @dataclass
 class LLMToolCall:
     name: str
@@ -106,7 +146,7 @@ class LLMClient:
     ) -> LLMResponse:
         payload: dict[str, Any] = {
             "model": config.ollama_model,
-            "messages": messages,
+            "messages": normalize_messages(messages),
             "stream": False,
             "keep_alive": config.ollama_keep_alive,
             "think": False,  # Matikan chain-of-thought panjang agar respons instan
@@ -143,7 +183,7 @@ class LLMClient:
     async def _ollama_stream(self, messages: list[dict[str, Any]], fast_voice: bool) -> AsyncIterator[str]:
         payload: dict[str, Any] = {
             "model": config.ollama_model,
-            "messages": messages,
+            "messages": normalize_messages(messages),
             "stream": True,
             "keep_alive": config.ollama_keep_alive,
             "think": False,
@@ -192,7 +232,7 @@ class LLMClient:
     ) -> LLMResponse:
         payload: dict[str, Any] = {
             "model": config.openai_model,
-            "messages": messages,
+            "messages": normalize_messages(messages),
             "temperature": 0.82,
             "max_tokens": 320 if fast_voice else 650,
         }
@@ -214,7 +254,7 @@ class LLMClient:
     async def _openai_stream(self, messages: list[dict[str, Any]], fast_voice: bool) -> AsyncIterator[str]:
         payload = {
             "model": config.openai_model,
-            "messages": messages,
+            "messages": normalize_messages(messages),
             "temperature": 0.82,
             "max_tokens": 280 if fast_voice else 600,
             "stream": True,
@@ -244,7 +284,7 @@ class LLMClient:
         client = genai.Client(api_key=config.gemini_api_key)
         sys_chunks: list[str] = []
         contents: list[types.Content] = []
-        for m in messages:
+        for m in normalize_messages(messages):
             if m["role"] == "system":
                 sys_chunks.append(m["content"])
             else:

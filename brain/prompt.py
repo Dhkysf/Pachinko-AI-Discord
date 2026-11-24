@@ -116,9 +116,9 @@ def assemble_messages(
     style_block = f"<style_note>\n" + "\n".join(style_notes) + "\n</style_note>" if style_notes else ""
     turn_block = f"<turn reason=\"{wake_reason}\">Balas langsung sebagai {profile.display_name} tanpa menulis prefix '[{profile.display_name}]:'.</turn>"
 
-    tail_sys = "\n\n".join(b for b in (now_block, style_block, turn_block) if b)
-    messages.append({"role": "system", "content": tail_sys})
-
+    tail_ctx = "\n\n".join(b for b in (now_block, style_block, turn_block) if b)
     safe_user = data_block(f"chat:{sname}", user_text, title=modality)
-    messages.append({"role": "user", "content": f"[{sname}]:\n{safe_user}"})
+    user_msg = f"[{sname}]:\n{safe_user}"
+    final_user = f"{tail_ctx}\n\n{user_msg}" if tail_ctx else user_msg
+    messages.append({"role": "user", "content": final_user})
     return messages
