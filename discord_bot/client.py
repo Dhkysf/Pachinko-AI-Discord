@@ -29,6 +29,94 @@ log = logging.getLogger("discord_bot")
 logging.getLogger("discord.voice.receive.reader").setLevel(logging.WARNING)
 
 GUILDS = [config.guild_id] if config.guild_id else None
+_ADMIN_ONLY_MSG = "Command ini cuma buat admin server."
+
+
+def is_admin(ctx) -> bool:
+    author = getattr(ctx, "author", None)
+    if author is None:
+        return False
+    if getattr(author, "id", None) in config.owner_ids:
+        return True
+    if getattr(ctx, "guild", None) is None:
+        return False
+    perms = getattr(author, "guild_permissions", None)
+    return bool(getattr(perms, "manage_guild", False))
+
+
+def _can_send(channel, guild) -> bool:
+    if channel is None or not hasattr(channel, "send"):
+        return False
+    me = getattr(guild, "me", None) if guild is not None else None
+    if me is not None and hasattr(channel, "permissions_for"):
+        return bool(channel.permissions_for(me).send_messages)
+    return True
+
+
+async def deliver_reminder(bot, sessions: dict, item: dict, profiles, tts) -> bool:
+    prof = profiles.current
+    note = item["note"]
+    uname = item["user_name"]
+    uid = item["user_id"]
+    room_id = str(item["room_id"])
+    msg_txt = f"⏰ <@{uid}> (**{uname}**), pengingat dari {prof.display_name}: **{note}**"
+
+    ch = None
+    sess = None
+    if room_id.isdigit():
+        raw_ch = bot.get_channel(int(room_id))
+        ch = raw_ch if raw_ch and hasattr(raw_ch, "send") else None
+        guild = getattr(ch, "guild", None)
+        if guild is not None:
+            sess = sessions.get(guild.id)
+        else:
+            for s in sessions.values():
+                if s.text_channel and str(getattr(s.text_channel, "id", "")) == room_id:
+                    sess = s
+                    break
+    elif room_id.startswith("guild:"):
+        gid_str = room_id.split(":", 1)[1]
+        if gid_str.isdigit():
+            gid = int(gid_str)
+            sess = sessions.get(gid)
+            if sess and sess.text_channel and hasattr(sess.text_channel, "send"):
+                ch = sess.text_channel
+            else:
+                guild = bot.get_guild(gid)
+                if guild is not None:
+                    if _can_send(getattr(guild, "system_channel", None), guild):
+                        ch = guild.system_channel
+                    else:
+                        for tc in getattr(guild, "text_channels", None) or ():
+                            if _can_send(tc, guild):
+                                ch = tc
+                                break
+
+    delivered = False
+    if ch is not None:
+        try:
+            await ch.send(msg_txt)
+            delivered = True
+        except Exception:
+            log.exception("Failed sending reminder id=%s to channel", item.get("id"))
+
+    if sess is not None and sess.vc.is_connected() and not sess.singing_active:
+        try:
+            spoken = f"Eh {uname}, waktunya pengingat kamu nih: {note}."
+            pcm = await tts.synthesize_pcm(spoken, emotion="happy")
+            await sess.play_raw_pcm(pcm, spoken)
+            delivered = True
+        except Exception:
+            log.exception("Failed speaking reminder id=%s in voice", item.get("id"))
+
+    if not delivered:
+        log.warning(
+            "Could not deliver reminder id=%s (room_id=%s, user_id=%s): no reachable channel or voice session.",
+            item.get("id"),
+            room_id,
+            uid,
+        )
+    return delivered
 
 
 def build_discord_bot(
@@ -52,7 +140,12 @@ def build_discord_bot(
     intents.guilds = True
     intents.message_content = enable_message_content
 
-    bot = discord.Bot(intents=intents)
+    bot = discord.Bot(
+        intents=intents,
+        allowed_mentions=discord.AllowedMentions(
+            everyone=False, roles=False, users=True, replied_user=False
+        ),
+    )
     sessions: dict[int, NaturalVoiceSession] = {}
     bot.voice_sessions = sessions  # type: ignore[attr-defined]
 
@@ -74,26 +167,7 @@ def build_discord_bot(
             try:
                 due_list = await memory.pop_due_schedules()
                 for item in due_list:
-                    prof = profiles.current
-                    note = item["note"]
-                    uname = item["user_name"]
-                    uid = item["user_id"]
-                    room_id = item["room_id"]
-                    msg_txt = f"⏰ <@{uid}> (**{uname}**), pengingat dari {prof.display_name}: **{note}**"
-
-                    # Send to text channel if found
-                    if room_id.isdigit():
-                        ch = bot.get_channel(int(room_id))
-                        if ch and hasattr(ch, "send"):
-                            await ch.send(msg_txt)
-
-                    # If in a voice channel, speak it aloud as well!
-                    for sess in sessions.values():
-                        if sess.vc.is_connected() and not sess.singing_active:
-                            spoken = f"Eh {uname}, waktunya pengingat kamu nih: {note}."
-                            pcm = await tts.synthesize_pcm(spoken, emotion="happy")
-                            await sess.play_raw_pcm(pcm, spoken)
-                            break
+                    await deliver_reminder(bot, sessions, item, profiles, tts)
             except Exception:
                 log.exception("Error in schedule loop")
             await asyncio.sleep(5.0)
@@ -167,14 +241,23 @@ def build_discord_bot(
 
     @bot.event
     async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        if bot.user and member.id == bot.user.id and after.channel is None:
+            sess = sessions.pop(member.guild.id, None)
+            if sess:
+                log.info("Bot disconnected from voice in guild %s, cleaning up session.", member.guild.id)
+                await sess.stop()
+                await bus.emit("voice.left", guild_id=member.guild.id, reason="disconnected")
+            return
         sess = sessions.get(member.guild.id)
         if not sess or not sess.vc.channel:
             return
         humans = [m for m in sess.vc.channel.members if not m.bot]
         if not humans:
             log.info("Voice channel empty, leaving automatically.")
-            await sessions.pop(member.guild.id).stop()
-            await bus.emit("voice.left", guild_id=member.guild.id, reason="channel_empty")
+            popped = sessions.pop(member.guild.id, None)
+            if popped:
+                await popped.stop()
+                await bus.emit("voice.left", guild_id=member.guild.id, reason="channel_empty")
 
     # ================ SLASH COMMANDS ================
 
@@ -246,6 +329,8 @@ def build_discord_bot(
     @bot.slash_command(name="mode", description="Atur seberapa sering karakter nimbrung otomatis di text channel ini", guild_ids=GUILDS)
     @discord.option("level", str, choices=list(MODE_HOURLY_CAP.keys()), description="off | mention-only | quiet | normal | lively")
     async def cmd_mode(ctx: discord.ApplicationContext, level):
+        if not is_admin(ctx):
+            return await ctx.respond(_ADMIN_ONLY_MSG, ephemeral=True)
         await store.set_channel_mode(str(ctx.channel.id), level)
         cap = MODE_HOURLY_CAP[level]
         info = "hanya saat dipanggil" if cap == 0 else f"bisa ikut nimbrung maks {cap}x/jam"
@@ -288,6 +373,14 @@ def build_discord_bot(
 
     @bot.slash_command(name="skip", description="Lewati lagu yang sedang diputar", guild_ids=GUILDS)
     async def cmd_skip(ctx: discord.ApplicationContext):
+        cur = singing.snapshot().get("current")
+        if not cur:
+            return await ctx.respond("Sedang tidak ada lagu yang diputar.", ephemeral=True)
+        if not is_admin(ctx) and str(ctx.author.id) != str(cur.get("requester_id", "")):
+            return await ctx.respond(
+                "Cuma yang request lagu ini atau admin server yang bisa `/skip`.",
+                ephemeral=True,
+            )
         if singing.skip_current():
             await ctx.respond("⏭️ Lagu dilewati!")
         else:
@@ -377,12 +470,16 @@ def build_discord_bot(
 
     @bot.slash_command(name="reset", description="Bersihkan riwayat obrolan jangka pendek di ruang ini (Bond & Notebook tetap aman)", guild_ids=GUILDS)
     async def cmd_reset(ctx: discord.ApplicationContext):
+        if not is_admin(ctx):
+            return await ctx.respond(_ADMIN_ONLY_MSG, ephemeral=True)
         await memory.clear_room_transcript(str(ctx.channel.id))
         await memory.clear_room_transcript(f"guild:{ctx.guild.id}")
         await ctx.respond("🧹 Ingatan obrolan pendek sudah disegarkan! *(Bond & Buku Catatan tetap tersimpan)*", ephemeral=True)
 
     @bot.slash_command(name="reload", description="Muat ulang file persona & lorebook tanpa restart bot", guild_ids=GUILDS)
     async def cmd_reload(ctx: discord.ApplicationContext):
+        if not is_admin(ctx):
+            return await ctx.respond(_ADMIN_ONLY_MSG, ephemeral=True)
         prof = await profiles.reload()
         await ctx.respond(f"✨ Persona **{prof.display_name}** berhasil dimuat ulang!", ephemeral=True)
 
