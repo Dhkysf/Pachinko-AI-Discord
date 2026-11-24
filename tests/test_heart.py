@@ -29,13 +29,15 @@ class TestHeartPure(unittest.TestCase):
         clean3, emo3, feel3 = extract_tags("Halo biasa")
         self.assertEqual((clean3, emo3, feel3), ("Halo biasa", None, None))
 
-    # BUG: truncated trailing <feel> or <emo: tag is not stripped from clean text
-    @unittest.expectedFailure
     def test_extract_tags_truncated_trailing_tag(self) -> None:
         clean_feel, _, _ = extract_tags("Halo! <feel>self: joy weak")
-        self.assertNotIn("<feel>", clean_feel)
+        self.assertEqual(clean_feel, "Halo!")
         clean_emo, _, _ = extract_tags("Halo! <emo:hap")
-        self.assertNotIn("<emo:", clean_emo)
+        self.assertEqual(clean_emo, "Halo!")
+        clean_lt, _, _ = extract_tags("Halo! <")
+        self.assertEqual(clean_lt, "Halo!")
+        clean_mid, _, _ = extract_tags("Nilai 3 < 5 ya")
+        self.assertEqual(clean_mid, "Nilai 3 < 5 ya")
 
     def test_bond_tier_name_boundaries(self) -> None:
         cases = [

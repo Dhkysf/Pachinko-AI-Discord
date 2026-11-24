@@ -54,6 +54,10 @@ BOND_TIERS: list[tuple[float, str]] = [
 _INTENSITY = {"weak": 0.22, "lemah": 0.22, "medium": 0.45, "sedang": 0.45, "strong": 0.75, "kuat": 0.75}
 _FEEL_RE = re.compile(r"<feel>(.*?)</feel>", re.IGNORECASE | re.DOTALL)
 _EMO_RE = re.compile(r"<emo:([a-z_]+)>", re.IGNORECASE)
+_TRUNCATED_TAIL_RE = re.compile(
+    r"(?:<feel\b.*|</feel\b[^>]*>?|<emo:[^>]*|</?emo\b[^>]*>?|</?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def bond_tier_name(bond: float) -> str:
@@ -74,6 +78,7 @@ def extract_tags(raw_text: str) -> tuple[str, str | None, str | None]:
 
     clean = _EMO_RE.sub("", raw_text)
     clean = _FEEL_RE.sub("", clean)
+    clean = _TRUNCATED_TAIL_RE.sub("", clean)
     clean = clean.replace("<silence/>", "").strip()
     return clean, emo, feel
 

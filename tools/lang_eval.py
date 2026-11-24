@@ -17,7 +17,7 @@ if str(ROOT_DIR) not in sys.path:
 from brain.llm import LLMClient
 from brain.profile import ProfileManager
 from brain.prompt import assemble_messages
-from brain.runner import _PREFIX_STRIP_RE, _assistant_tool_turn
+from brain.runner import _PREFIX_STRIP_RE, _assistant_tool_turn, parse_reminder_request
 from brain.tools import TOOL_SCHEMAS
 from config import DATA_DIR, config
 from core.safety import filter_outgoing
@@ -139,6 +139,11 @@ async def _run_eval(model: str, runs: int) -> Path:
                         out = _fake_tool_result(tc.name, tc.arguments)
                         messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
                     resp = await llm.complete_with_tools(messages, tools=None, fast_voice=False)
+                if "set_reminder" not in tools_called:
+                    parsed_rem = parse_reminder_request(prompt_text)
+                    if parsed_rem is not None:
+                        _fake_tool_result("set_reminder", {"minutes": parsed_rem[0], "note": parsed_rem[1]})
+                        tools_called.append("set_reminder")
                 elapsed = time.perf_counter() - t0
 
                 raw = resp.text or ""

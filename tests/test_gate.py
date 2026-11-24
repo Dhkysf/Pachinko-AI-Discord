@@ -46,11 +46,11 @@ class TestActionGate(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok1)
         self.assertTrue(ok2)
 
-    # BUG: unknown capability defaults to "medium" and is allowed instead of rejected
-    @unittest.expectedFailure
     async def test_unknown_tool_rejected(self) -> None:
-        ok, _ = await self.gate.check("delete_everything", {}, requester_id="42", requester_name="Budi")
+        with self.assertLogs("brain.gate", level="WARNING"):
+            ok, msg = await self.gate.check("delete_everything", {}, requester_id="42", requester_name="Budi")
         self.assertFalse(ok)
+        self.assertIn("tidak dikenali", msg)
 
     async def test_medium_risk_cooldown_for_non_owner(self) -> None:
         clock = [1000.0]

@@ -7,12 +7,15 @@ Every impactful action (tool call / autonomous initiative) passes through the Ga
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 from config import config
 from core.bus import EventBus
 from core.store import Store
+
+log = logging.getLogger("brain.gate")
 
 
 RISK_LEVELS = {
@@ -53,7 +56,11 @@ class ActionGate:
             await self.bus.emit("gate.decision", capability=capability, verdict="deny", reason="autonomy_paused")
             return False, "Autonomy is currently paused by admin."
 
-        risk = RISK_LEVELS.get(capability, "medium")
+        risk = RISK_LEVELS.get(capability)
+        if risk is None:
+            log.warning("Rejected unknown capability: %r (user=%s)", capability, requester_name)
+            await self.bus.emit("gate.decision", capability=capability, verdict="deny", reason="unknown_capability")
+            return False, f"Aksi `{capability}` tidak dikenali."
         is_owner = requester_id.isdigit() and int(requester_id) in config.owner_ids
 
         if risk == "medium":

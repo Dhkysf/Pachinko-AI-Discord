@@ -25,6 +25,77 @@ _URL_RE = re.compile(r"https?://\S+")
 _PREFIX_STRIP_RE = re.compile(r"^\[[^\]]+\]:\s*")
 _LLM_ERROR_REPLY = "Otakku lagi error, coba lagi bentar ya"
 
+_REMINDER_VERB_RE = re.compile(r"\b(?:ingetin|ingatkan|ingatin|remind|pasang\s+timer|alarm)\b", re.IGNORECASE)
+_NUM_WORDS = {
+    "tiga puluh": 30.0,
+    "lima belas": 15.0,
+    "sepuluh": 10.0,
+    "sembilan": 9.0,
+    "delapan": 8.0,
+    "tujuh": 7.0,
+    "enam": 6.0,
+    "lima": 5.0,
+    "empat": 4.0,
+    "tiga": 3.0,
+    "dua": 2.0,
+    "satu": 1.0,
+}
+_UNIT_MULT = {"detik": 1.0 / 60.0, "menit": 1.0, "jam": 60.0}
+_TIME_EXPR_RE = re.compile(
+    r"(?:\b(?:dalam|setelah)\s+)?"
+    r"(?P<expr>"
+    r"\bsetengah\s+jam\b"
+    r"|\bsejam\b"
+    r"|\bsemenit\b"
+    r"|(?:\d+(?:[.,]\d+)?|\b(?:tiga\s+puluh|lima\s+belas|sepuluh|sembilan|delapan|tujuh|enam|lima|empat|tiga|dua|satu)\b)\s*(?:detik|menit|jam)\b"
+    r")"
+    r"(?:\s+(?:lagi|dari\s+sekarang))?",
+    re.IGNORECASE,
+)
+_REMINDER_FILLER_RE = re.compile(
+    r"\b(?:aku|gue|saya|me|buat|untuk|biar|dong|ya|yah|tolong|please|pls|nih|deh)\b",
+    re.IGNORECASE,
+)
+
+
+def parse_reminder_request(text: str) -> tuple[float, str] | None:
+    """Parse clear Indonesian reminder requests into `(minutes, note)` or `None`."""
+    if not text or not _REMINDER_VERB_RE.search(text):
+        return None
+    tm = _TIME_EXPR_RE.search(text)
+    if not tm:
+        return None
+
+    expr = re.sub(r"\s+", " ", tm.group("expr").strip().lower())
+    if expr == "setengah jam":
+        minutes = 30.0
+    elif expr == "sejam":
+        minutes = 60.0
+    elif expr == "semenit":
+        minutes = 1.0
+    else:
+        m_num = re.match(r"^(\d+(?:[.,]\d+)?|[a-z ]+?)\s*(detik|menit|jam)$", expr)
+        if not m_num:
+            return None
+        raw_amt, unit = m_num.group(1).strip(), m_num.group(2)
+        if raw_amt in _NUM_WORDS:
+            amt = _NUM_WORDS[raw_amt]
+        else:
+            try:
+                amt = float(raw_amt.replace(",", "."))
+            except ValueError:
+                return None
+        minutes = amt * _UNIT_MULT[unit]
+
+    if minutes <= 0:
+        return None
+
+    cleaned = _REMINDER_VERB_RE.sub(" ", text[:tm.start()] + " " + text[tm.end():])
+    cleaned = _REMINDER_FILLER_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"[^\w\s-]", " ", cleaned)
+    note = re.sub(r"\s+", " ", cleaned).strip() or "Pengingat!"
+    return round(minutes, 2), note
+
 
 def _assistant_tool_turn(text: str | None, tool_calls: list) -> str:
     if text and text.strip():
@@ -78,6 +149,27 @@ class BrainRunner:
         if room_id not in self._room_locks:
             self._room_locks[room_id] = asyncio.Lock()
         return self._room_locks[room_id]
+
+    async def _maybe_reminder_fallback(
+        self,
+        *,
+        user_text: str,
+        called_tools: set[str],
+        room_id: str,
+        user_id: str,
+        user_name: str,
+    ) -> bool:
+        if "set_reminder" in called_tools:
+            return False
+        parsed = parse_reminder_request(user_text)
+        if parsed is None:
+            return False
+        minutes, note = parsed
+        args = {"minutes": minutes, "note": note}
+        await self.bus.emit("brain.tool_call", tool="set_reminder", args=args, user=user_name)
+        await self.tools.execute("set_reminder", args, room_id=room_id, user_id=user_id, user_name=user_name)
+        log.info("reminder created by fallback (minutes=%s, user=%s)", minutes, user_name)
+        return True
 
     async def _prepare_turn(
         self,
@@ -143,11 +235,13 @@ class BrainRunner:
             )
 
             # At most 1 tool-call round, then one final answer without tools
+            called_tools: set[str] = set()
             try:
                 resp = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=False)
                 if resp.tool_calls:
                     messages.append({"role": "assistant", "content": _assistant_tool_turn(resp.text, resp.tool_calls)})
                     for tc in resp.tool_calls:
+                        called_tools.add(tc.name)
                         await self.bus.emit("brain.tool_call", tool=tc.name, args=tc.arguments, user=user_name)
                         out = await self.tools.execute(
                             tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
@@ -157,6 +251,14 @@ class BrainRunner:
             except Exception:
                 log.exception("LLM call failed in text turn")
                 return TurnResult(text=_LLM_ERROR_REPLY, emotion="neutral", silent=False)
+
+            await self._maybe_reminder_fallback(
+                user_text=user_text,
+                called_tools=called_tools,
+                room_id=room_id,
+                user_id=user_id,
+                user_name=user_name,
+            )
 
             raw = resp.text or ""
             if "<silence/>" in raw or not raw.strip():
@@ -209,8 +311,12 @@ class BrainRunner:
             low = user_text.lower()
             need_tools = any(
                 kw in low
-                for kw in ("ingetin", "ingatkan", "timer", "cariin", "googling", "berita", "nyanyiin", "putar lagu", "request lagu")
+                for kw in (
+                    "ingetin", "ingatkan", "ingatin", "remind", "timer", "alarm",
+                    "cariin", "googling", "berita", "nyanyiin", "putar lagu", "request lagu",
+                )
             )
+            called_tools: set[str] = set()
             if need_tools and self.llm.supports_tools():
                 try:
                     first = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=True)
@@ -220,12 +326,20 @@ class BrainRunner:
                 if first.tool_calls:
                     messages.append({"role": "assistant", "content": _assistant_tool_turn(first.text, first.tool_calls)})
                     for tc in first.tool_calls:
+                        called_tools.add(tc.name)
                         await self.bus.emit("brain.tool_call", tool=tc.name, args=tc.arguments, user=user_name)
                         out = await self.tools.execute(
                             tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
                         )
                         messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
                 elif first.text and first.text.strip():
+                    await self._maybe_reminder_fallback(
+                        user_text=user_text,
+                        called_tools=called_tools,
+                        room_id=room_id,
+                        user_id=user_id,
+                        user_name=user_name,
+                    )
                     if "<silence/>" in first.text:
                         return
                     clean, explicit_emo, feel_raw = extract_tags(first.text)
@@ -278,6 +392,13 @@ class BrainRunner:
                 return
 
             # Remaining buffer after stream ends
+            await self._maybe_reminder_fallback(
+                user_text=user_text,
+                called_tools=called_tools,
+                room_id=room_id,
+                user_id=user_id,
+                user_name=user_name,
+            )
             clean_tail, explicit_emo, feel_raw = extract_tags(full_raw)
             emotion = await self.heart.apply_feel_block(
                 feel_raw, explicit_emo or current_emo, user_id, user_name, prof.temperament
