@@ -206,7 +206,7 @@ def build_discord_bot(
         )
         if not getattr(bot, "_sched_started", False):
             bot._sched_started = True  # type: ignore[attr-defined]
-            asyncio.create_task(_schedule_loop())
+            bot._sched_task = asyncio.create_task(_schedule_loop())  # type: ignore[attr-defined]
         await bus.emit("discord.ready", bot_user=str(bot.user), bot_id=str(bot.user.id))
 
     # ---------------- Text Channel Listener & Triage ----------------

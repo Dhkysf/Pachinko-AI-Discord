@@ -236,17 +236,17 @@ class Store:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA_SQL)
         await self._conn.commit()
+        await self.prune_old_events()
 
     async def close(self) -> None:
         if self._conn:
             await self._conn.close()
             self._conn = None
 
-    async def log_event(self, ev_id: str, topic: str, ts: float, payload: dict[str, Any]) -> None:
-        await self.write(
-            "INSERT OR IGNORE INTO events_log (id, topic, ts, payload_json) VALUES (?, ?, ?, ?)",
-            (ev_id, topic, ts, json.dumps(payload, ensure_ascii=False)),
-        )
+    async def prune_old_events(self, max_age_days: int = 7) -> int:
+        cutoff = time.time() - max_age_days * 86400
+        cur = await self.write("DELETE FROM events_log WHERE ts < ?", (cutoff,))
+        return cur.rowcount
 
     async def get_kv(self, key: str, default: Any = None) -> Any:
         cur = await self.conn.execute("SELECT value_json FROM kv_settings WHERE key = ?", (key,))

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
 import sys
 
 import discord
@@ -16,7 +15,7 @@ from brain.runner import BrainRunner
 from brain.tools import ToolBox
 from brain.triage import TriageEngine
 from config import DATA_DIR, config
-from core.bus import Event, EventBus
+from core.bus import EventBus
 from core.store import Store, migrate_legacy_db
 from discord_bot.client import build_discord_bot
 from heart.engine import HeartEngine
@@ -34,17 +33,81 @@ logging.basicConfig(
 log = logging.getLogger("pachinko")
 
 
+async def shutdown_all(
+    *,
+    bot=None,
+    singing=None,
+    uvi_server=None,
+    web_task: asyncio.Task | None = None,
+    tts=None,
+    llm=None,
+    store=None,
+) -> None:
+    if bot is not None:
+        sessions = getattr(bot, "voice_sessions", None) or {}
+        for gid, sess in list(sessions.items()):
+            try:
+                await sess.stop()
+            except Exception:
+                log.exception("Failed stopping voice session %s", gid)
+            finally:
+                sessions.pop(gid, None)
+
+        sched_task = getattr(bot, "_sched_task", None)
+        if sched_task is not None and not sched_task.done():
+            sched_task.cancel()
+            await asyncio.gather(sched_task, return_exceptions=True)
+
+        try:
+            if not getattr(bot, "is_closed", lambda: False)():
+                await bot.close()
+        except Exception:
+            log.exception("Failed closing Discord bot")
+
+    if singing is not None:
+        try:
+            await singing.stop()
+        except Exception:
+            log.exception("Failed stopping singing engine")
+
+    if uvi_server is not None:
+        uvi_server.should_exit = True
+    if web_task is not None:
+        try:
+            await asyncio.wait_for(web_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            web_task.cancel()
+            await asyncio.gather(web_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception("Failed stopping web server")
+
+    if tts is not None:
+        try:
+            await tts.close()
+        except Exception:
+            log.exception("Failed closing TTS client")
+
+    if llm is not None:
+        try:
+            await llm.close()
+        except Exception:
+            log.exception("Failed closing LLM client")
+
+    if store is not None:
+        try:
+            await store.close()
+        except Exception:
+            log.exception("Failed closing store")
+
+
 async def run_all() -> None:
     migrate_legacy_db(config.db_path, DATA_DIR)
     store = Store(config.db_path)
     await store.init()
 
     bus = EventBus()
-
-    async def _persist_ev(ev: Event) -> None:
-        await store.log_event(ev.id, ev.topic, ev.ts, ev.payload)
-
-    bus.set_persist_hook(_persist_ev)
 
     profiles = ProfileManager(store)
     prof = await profiles.reload()
@@ -96,9 +159,11 @@ async def run_all() -> None:
         log_level="warning",
     )
     uvi_server = uvicorn.Server(uvi_cfg)
+    uvi_server.install_signal_handlers = lambda: None
     web_task = asyncio.create_task(uvi_server.serve())
     log.info("🌐 Web Admin Panel active at: http://%s:%d", config.panel_host, config.panel_port)
 
+    active_bot = None
     try:
         if not config.discord_token:
             log.warning("DISCORD_TOKEN is not set in .env — running Web Panel & Playground mode only.")
@@ -120,6 +185,7 @@ async def run_all() -> None:
             economy=economy,
             enable_message_content=True,
         )
+        active_bot = bot
         try:
             await bot.start(config.discord_token)
         except discord.PrivilegedIntentsRequired:
@@ -144,13 +210,18 @@ async def run_all() -> None:
                 economy=economy,
                 enable_message_content=False,
             )
+            active_bot = bot2
             await bot2.start(config.discord_token)
     finally:
-        uvi_server.should_exit = True
-        await singing.stop()
-        await tts.close()
-        await llm.close()
-        await store.close()
+        await shutdown_all(
+            bot=active_bot,
+            singing=singing,
+            uvi_server=uvi_server,
+            web_task=web_task,
+            tts=tts,
+            llm=llm,
+            store=store,
+        )
 
 
 if __name__ == "__main__":

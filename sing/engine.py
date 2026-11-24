@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import subprocess
 import uuid
 from dataclasses import asdict, dataclass
@@ -29,6 +30,7 @@ log = logging.getLogger("sing")
 
 SONGS_DIR = DATA_DIR / "songs"
 SONGS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_SONG_CACHE_BYTES = 500 * 1024 * 1024
 
 _ALLOWED_YT_HOSTS = frozenset({
     "youtube.com",
@@ -69,6 +71,67 @@ def _resolve_song_target(query: str) -> str:
     return f"ytsearch1:{q}"
 
 
+def trim_song_cache(
+    songs_dir: Path = SONGS_DIR,
+    max_bytes: int = MAX_SONG_CACHE_BYTES,
+    protected: set[Path] | None = None,
+) -> list[Path]:
+    """Keep songs_dir under max_bytes by deleting oldest files (and their .title), skipping protected."""
+    entries: list[tuple[float, int, Path]] = []
+    total = 0
+    for p in songs_dir.iterdir():
+        if not p.is_file():
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        entries.append((st.st_mtime, st.st_size, p))
+        total += st.st_size
+
+    if total <= max_bytes:
+        return []
+
+    protected_resolved = {p.resolve() for p in (protected or ())}
+    entries.sort(key=lambda item: item[0])
+    deleted: list[Path] = []
+
+    for _mtime, size, path in entries:
+        if total <= max_bytes:
+            break
+        if path.resolve() in protected_resolved or not path.exists():
+            continue
+        if path.suffix == ".title":
+            has_sibling = any(
+                sib.suffix != ".title" and sib.is_file()
+                for sib in list(songs_dir.glob(f"{path.stem}.*")) + list(songs_dir.glob(f"{path.stem}_cover.*"))
+            )
+            if has_sibling:
+                continue
+        path.unlink(missing_ok=True)
+        total -= size
+        deleted.append(path)
+
+        if path.suffix != ".title":
+            base_slug = path.stem.removesuffix("_cover")
+            title_path = path.with_name(f"{base_slug}.title")
+            if title_path.exists() and title_path.resolve() not in protected_resolved:
+                has_sibling = any(
+                    sib.suffix != ".title" and sib.is_file()
+                    for sib in list(songs_dir.glob(f"{base_slug}.*")) + list(songs_dir.glob(f"{base_slug}_cover.*"))
+                )
+                if not has_sibling:
+                    try:
+                        t_size = title_path.stat().st_size
+                    except OSError:
+                        t_size = 0
+                    title_path.unlink(missing_ok=True)
+                    total -= t_size
+                    deleted.append(title_path)
+
+    return deleted
+
+
 @dataclass
 class SongItem:
     id: str
@@ -89,6 +152,7 @@ class SingingEngine:
         self._skip_requested: bool = False
         self._session_getter: Callable[[str], Any] | None = None
         self._worker_task: asyncio.Task | None = None
+        self._active_paths: set[Path] = set()
         self._http = httpx.AsyncClient(timeout=20.0)
 
     def bind_voice_lookup(self, getter: Callable[[str], Any]) -> None:
@@ -101,6 +165,8 @@ class SingingEngine:
     async def stop(self) -> None:
         if self._worker_task:
             self._worker_task.cancel()
+            await asyncio.gather(self._worker_task, return_exceptions=True)
+            self._worker_task = None
         await self._http.aclose()
 
     def skip_current(self) -> bool:
@@ -154,7 +220,12 @@ class SingingEngine:
             finally:
                 self.current = None
                 self._skip_requested = False
+                self._active_paths.clear()
                 await self.bus.emit("sing.idle")
+                try:
+                    await asyncio.to_thread(trim_song_cache, SONGS_DIR, MAX_SONG_CACHE_BYTES, set(self._active_paths))
+                except Exception:
+                    log.exception("Failed to trim song cache")
 
     async def _abort_if_skipped(self, item: SongItem) -> bool:
         if not self._skip_requested:
@@ -173,6 +244,7 @@ class SingingEngine:
         await self.bus.emit("sing.preparing", **asdict(item))
 
         title, audio_file = await self._download_song(item.query)
+        self._active_paths.add(audio_file)
         item.title = title
         if await self._abort_if_skipped(item):
             return
@@ -180,6 +252,7 @@ class SingingEngine:
         if config.rvc_enabled:
             async with vram_guard.lease_heavy_gpu(f"sing:{title[:24]}"):
                 audio_file = await self._try_rvc_cover_pipeline(audio_file)
+            self._active_paths.add(audio_file)
             if await self._abort_if_skipped(item):
                 return
 
@@ -207,6 +280,10 @@ class SingingEngine:
         if cached and meta_file.exists():
             audio_candidates = [p for p in cached if p.suffix in (".mp3", ".m4a", ".webm", ".wav", ".opus")]
             if audio_candidates:
+                try:
+                    os.utime(audio_candidates[0], None)
+                except OSError:
+                    pass
                 return meta_file.read_text(encoding="utf-8").strip(), audio_candidates[0]
 
         def _yt_sync() -> tuple[str, Path]:
@@ -249,6 +326,9 @@ class SingingEngine:
         cover_out = source_audio.with_name(source_audio.stem + "_cover.wav")
         if cover_out.exists():
             return cover_out
+        vocals_path: Path | None = None
+        inst_path: Path | None = None
+        conv_voc: Path | None = None
         try:
             from audio_separator.separator import Separator  # type: ignore
 
@@ -273,7 +353,8 @@ class SingingEngine:
             if r.status_code == 200 and r.content:
                 conv_voc = source_audio.with_name(source_audio.stem + "_rvc_voc.wav")
                 conv_voc.write_bytes(r.content)
-                subprocess.run(
+                await asyncio.to_thread(
+                    subprocess.run,
                     [
                         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                         "-i", str(conv_voc), "-i", str(inst_path),
@@ -284,5 +365,10 @@ class SingingEngine:
                 )
                 return cover_out
         except Exception as e:
+            cover_out.unlink(missing_ok=True)
             log.info("Full RVC pipeline not active (%s), playing original track.", e)
+        finally:
+            for stem in (vocals_path, inst_path, conv_voc):
+                if stem is not None:
+                    stem.unlink(missing_ok=True)
         return source_audio

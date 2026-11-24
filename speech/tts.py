@@ -172,10 +172,11 @@ class TTSEngine:
 
     async def _apply_rvc_if_available(self, audio_bytes: bytes, fmt: str) -> tuple[bytes, str]:
         """If a local RVC / Applio server is active, convert voice timbre to the RVC character."""
+        in_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp_in:
-                tmp_in.write(audio_bytes)
                 in_path = Path(tmp_in.name)
+                tmp_in.write(audio_bytes)
             r = await self._http.post(
                 f"{config.rvc_api_url.rstrip('/')}/convert",
                 json={
@@ -185,9 +186,11 @@ class TTSEngine:
                 },
                 timeout=20.0,
             )
-            in_path.unlink(missing_ok=True)
             if r.status_code == 200 and r.content:
                 return r.content, "wav"
         except Exception as e:
             log.debug("RVC skipped (%s), using base TTS voice.", e)
+        finally:
+            if in_path is not None:
+                in_path.unlink(missing_ok=True)
         return audio_bytes, fmt
