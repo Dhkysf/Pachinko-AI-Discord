@@ -10,5 +10,5 @@ call .venv\Scripts\activate.bat
 REM Aktifkan akselerasi Vulkan pada Ollama bila ROCm driver AMD belum aktif
 set OLLAMA_VULKAN=1
 echo Menyalakan Miyoria-Py... Buka http://127.0.0.1:7878 di browser untuk Admin Panel!
-python main.py
+.venv\Scripts\python.exe main.py
 pause
