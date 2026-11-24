@@ -22,6 +22,7 @@ log = logging.getLogger("brain.runner")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?~])\s+|\n+")
 _URL_RE = re.compile(r"https?://\S+")
 _PREFIX_STRIP_RE = re.compile(r"^\[[^\]]+\]:\s*")
+_LLM_ERROR_REPLY = "Otakku lagi error, coba lagi bentar ya"
 
 
 def clean_for_speech(sentence: str) -> tuple[str, list[str]]:
@@ -135,18 +136,22 @@ class BrainRunner:
             )
 
             # At most 2 tool-call rounds
-            resp = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=False)
-            for _ in range(2):
-                if not resp.tool_calls:
-                    break
-                messages.append({"role": "assistant", "content": resp.text or ""})
-                for tc in resp.tool_calls:
-                    await self.bus.emit("brain.tool_call", tool=tc.name, args=tc.arguments, user=user_name)
-                    out = await self.tools.execute(
-                        tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
-                    )
-                    messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
-                resp = await self.llm.complete_with_tools(messages, tools=None, fast_voice=False)
+            try:
+                resp = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=False)
+                for _ in range(2):
+                    if not resp.tool_calls:
+                        break
+                    messages.append({"role": "assistant", "content": resp.text or ""})
+                    for tc in resp.tool_calls:
+                        await self.bus.emit("brain.tool_call", tool=tc.name, args=tc.arguments, user=user_name)
+                        out = await self.tools.execute(
+                            tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
+                        )
+                        messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
+                    resp = await self.llm.complete_with_tools(messages, tools=None, fast_voice=False)
+            except Exception:
+                log.exception("LLM call failed in text turn")
+                return TurnResult(text=_LLM_ERROR_REPLY, emotion="neutral", silent=False)
 
             raw = resp.text or ""
             if "<silence/>" in raw or not raw.strip():
@@ -201,8 +206,12 @@ class BrainRunner:
                 kw in low
                 for kw in ("ingetin", "ingatkan", "timer", "cariin", "googling", "berita", "nyanyiin", "putar lagu", "request lagu")
             )
-            if need_tools:
-                first = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=True)
+            if need_tools and self.llm.supports_tools():
+                try:
+                    first = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=True)
+                except Exception:
+                    log.exception("LLM tool pre-check failed in voice turn")
+                    return
                 if first.tool_calls:
                     messages.append({"role": "assistant", "content": first.text or ""})
                     for tc in first.tool_calls:
@@ -218,32 +227,36 @@ class BrainRunner:
             in_feel = False
             emitted_sentences: list[str] = []
 
-            async for tok in self.llm.stream_text(messages, fast_voice=True):
-                full_raw += tok
-                if "<silence/>" in full_raw:
-                    return
-                if "<feel" in buffer + tok:
-                    in_feel = True
-                if in_feel:
+            try:
+                async for tok in self.llm.stream_text(messages, fast_voice=True):
+                    full_raw += tok
+                    if "<silence/>" in full_raw:
+                        return
+                    if "<feel" in buffer + tok:
+                        in_feel = True
+                    if in_feel:
+                        buffer += tok
+                        continue
+
                     buffer += tok
-                    continue
+                    # Check for leading <emo:...> tag
+                    emo_m = re.search(r"<emo:([a-z_]+)>", buffer, re.I)
+                    if emo_m:
+                        current_emo = emo_m.group(1).lower()
+                        buffer = re.sub(r"<emo:[a-z_]+>", "", buffer, flags=re.I)
 
-                buffer += tok
-                # Check for leading <emo:...> tag
-                emo_m = re.search(r"<emo:([a-z_]+)>", buffer, re.I)
-                if emo_m:
-                    current_emo = emo_m.group(1).lower()
-                    buffer = re.sub(r"<emo:[a-z_]+>", "", buffer, flags=re.I)
-
-                # Split per sentence as soon as a period/question/exclamation mark followed by space appears
-                parts = _SENTENCE_SPLIT_RE.split(buffer)
-                if len(parts) > 1:
-                    for ready in parts[:-1]:
-                        spoken, urls = clean_for_speech(filter_outgoing(ready))
-                        if len(spoken) >= 2:
-                            emitted_sentences.append(spoken)
-                            yield spoken, current_emo, urls
-                    buffer = parts[-1]
+                    # Split per sentence as soon as a period/question/exclamation mark followed by space appears
+                    parts = _SENTENCE_SPLIT_RE.split(buffer)
+                    if len(parts) > 1:
+                        for ready in parts[:-1]:
+                            spoken, urls = clean_for_speech(filter_outgoing(ready))
+                            if len(spoken) >= 2:
+                                emitted_sentences.append(spoken)
+                                yield spoken, current_emo, urls
+                        buffer = parts[-1]
+            except Exception:
+                log.exception("LLM stream failed in voice turn")
+                return
 
             # Remaining buffer after stream ends
             clean_tail, explicit_emo, feel_raw = extract_tags(full_raw)

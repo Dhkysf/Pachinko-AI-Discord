@@ -162,7 +162,7 @@ def build_discord_bot(
                 user_text=message.content,
                 wake_reason=decision.reason,
             )
-        if not res.silent and res.text:
+        if not res.silent and res.text and res.text.strip():
             await message.reply(res.text[:1990], mention_author=False)
 
     @bot.event
@@ -238,7 +238,7 @@ def build_discord_bot(
                 user_text=pesan,
                 wake_reason="slash_say",
             )
-            await ctx.followup.send(res.text or "*(diam)*")
+            await ctx.followup.send(res.text.strip() or "*(diam)*")
         except Exception as e:
             log.exception("Error in /say")
             await ctx.followup.send(f"⚠️ Gagal memproses: `{str(e)[:280]}`")
