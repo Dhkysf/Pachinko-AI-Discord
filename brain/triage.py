@@ -1,11 +1,11 @@
 """Deterministic Triage & Channel Modes.
 
-Menentukan apakah sebuah pesan di Discord membangunkan karakter (tanpa buang token LLM):
-- `off`          : Mati total di channel ini.
-- `mention-only` : Hanya merespons kalau di-mention, di-reply, DM, atau namanya disebut.
-- `quiet`        : Bisa ikut nimbrung otomatis maks 2x/jam.
-- `normal`       : Bisa ikut nimbrung otomatis maks 6x/jam.
-- `lively`       : Aktif nimbrung otomatis maks 14x/jam.
+Decides whether a Discord message wakes the character (without spending LLM tokens):
+- `off`          : Completely disabled in this channel.
+- `mention-only` : Only responds when mentioned, replied to, DMed, or called by name.
+- `quiet`        : Can chime in autonomously at most 2x/hour.
+- `normal`       : Can chime in autonomously at most 6x/hour.
+- `lively`       : Actively chimes in autonomously at most 14x/hour.
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class TriageEngine:
         self._ambient_history: dict[str, deque[float]] = {}
 
     def normalize_wake_words(self, text: str, profile: CharacterProfile) -> str:
-        """Perbaiki salah dengar STT pada nama panggilan (misal 'Pacinko' -> 'Pachinko')."""
+        """Fix STT mishearings of nicknames (e.g. 'Pacinko' -> 'Pachinko')."""
         out = text
         for wrong, right in profile.wake_aliases.items():
             out = re.sub(rf"\b{re.escape(wrong)}\b", right, out, flags=re.IGNORECASE)

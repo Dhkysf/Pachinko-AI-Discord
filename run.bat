@@ -2,13 +2,13 @@
 title Pachinko Live Core (Bot + Panel :7878)
 cd /d "%~dp0"
 if not exist .venv (
-    echo [!] Jalankan setup.bat terlebih dahulu!
+    echo [!] Run setup.bat first!
     pause
     exit /b 1
 )
 call .venv\Scripts\activate.bat
-REM Aktifkan akselerasi Vulkan pada Ollama bila ROCm driver AMD belum aktif
+REM Enable Vulkan acceleration on Ollama if AMD ROCm driver is not active
 set OLLAMA_VULKAN=1
-echo Menyalakan Pachinko... Buka http://127.0.0.1:7878 di browser untuk Admin Panel!
+echo Starting Pachinko... Open http://127.0.0.1:7878 in your browser for the Admin Panel!
 .venv\Scripts\python.exe main.py
 pause

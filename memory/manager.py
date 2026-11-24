@@ -1,4 +1,4 @@
-"""Manajer Memori Berlapis (L1 Transcript, L2 Hybrid FTS5 + Vektor Lokal, L3 Living Notebook, & Jadwal)."""
+"""Layered Memory Manager (L1 Transcript, L2 Hybrid FTS5 + Local Vector, L3 Living Notebook, & Schedules)."""
 from __future__ import annotations
 
 import hashlib
@@ -15,7 +15,7 @@ VEC_DIM = 128
 
 
 def local_embed(text: str) -> list[float]:
-    """Vektor karakter/kata n-gram lokal super cepat (<1ms, 0 MB download, tahan salah ketik & slang Indo)."""
+    """Ultra-fast local character/word n-gram vector (<1ms, 0 MB download, resilient to typos & Indonesian slang)."""
     vec = [0.0] * VEC_DIM
     norm_text = re.sub(r"\s+", " ", text.lower()).strip()
     if not norm_text:
@@ -77,7 +77,7 @@ class MemoryManager:
         return row_id
 
     async def mark_interrupted(self, entry_id: int, heard_content: str) -> None:
-        """Catat hanya kalimat yang benar-benar sempat terdengar user sebelum dipotong (barge-in)."""
+        """Record only the words the user actually heard before interruption (barge-in)."""
         await self.store.conn.execute(
             "UPDATE transcripts SET interrupted = 1, heard_content = ? WHERE id = ?",
             (heard_content, entry_id),
@@ -169,7 +169,7 @@ class MemoryManager:
         clean = fact.strip()
         if not clean:
             return 0
-        # Hindari duplikat persis
+        # Avoid exact duplicates
         cur = await self.store.conn.execute(
             "SELECT line_id FROM notebook WHERE doc_key = ? AND active = 1 AND lower(fact) = lower(?)",
             (doc_key, clean),
@@ -200,7 +200,7 @@ class MemoryManager:
         return [dict(r) for r in await cur.fetchall()]
 
     async def auto_capture_user_facts(self, user_id: str, user_name: str, text: str) -> None:
-        """Tangkap fakta diri jelas secara ringan tanpa biaya LLM tambahan."""
+        """Lightweight capture of explicit self-facts without extra LLM cost."""
         patterns = [
             (r"\b(?:nama(?:ku| gue)|panggil (?:aku|gue))\s+([A-Za-z0-9_ -]{2,25})", "Minta dipanggil: {0}"),
             (r"\b(?:aku|gue)\s+(?:suka banget|hobi|doyan)\s+([^.!?\n]{3,60})", "Suka/hobi: {0}"),
@@ -219,7 +219,7 @@ class MemoryManager:
                     importance=0.75,
                 )
 
-    # ---------------- Jadwal & Pengingat ----------------
+    # ---------------- Schedules & Reminders ----------------
     async def add_schedule(
         self,
         *,

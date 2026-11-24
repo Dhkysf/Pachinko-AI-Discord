@@ -1,4 +1,4 @@
-"""Mesin Speech-to-Text Lokal (`faster-whisper` + opsional Groq) & Self-Echo Guard."""
+"""Local Speech-to-Text Engine (`faster-whisper` + optional Groq) & Self-Echo Guard."""
 from __future__ import annotations
 
 import asyncio
@@ -30,7 +30,7 @@ _HALLUCINATIONS = {
 
 
 def pcm48_stereo_to_float16k(pcm: bytes) -> np.ndarray:
-    """Konversi 48kHz stereo int16 -> 16kHz mono float32 [-1..1] langsung di memori."""
+    """Convert 48kHz stereo int16 -> 16kHz mono float32 [-1..1] directly in memory."""
     arr = np.frombuffer(pcm, dtype=np.int16)
     if arr.size % 2:
         arr = arr[:-1]
@@ -59,7 +59,7 @@ def _bigrams(text: str) -> set[str]:
 
 
 class SelfEchoGuard:
-    """Mencegah suara bot yang bocor ke mic user (tanpa headset) dianggap sebagai ucapan user."""
+    """Prevents bot audio leaking into a user's mic (without headset) from being treated as user speech."""
 
     def __init__(self, tail_seconds: float = 6.5) -> None:
         self.tail_seconds = tail_seconds
@@ -102,10 +102,10 @@ class STTEngine:
             cache_dir = MODELS_DIR / "whisper"
             cache_dir.mkdir(parents=True, exist_ok=True)
             device = config.whisper_device
-            # Pada Windows + AMD Radeon tanpa CUDA, faster-whisper otomatis memakai CTranslate2 CPU multi-thread cepat
+            # On Windows + AMD Radeon without CUDA, faster-whisper automatically uses fast multi-thread CTranslate2 CPU
             if device == "auto":
                 device = "cpu"
-            log.info("Memuat model Faster-Whisper '%s' (device=%s, compute=%s)...", config.whisper_model, device, config.whisper_compute_type)
+            log.info("Loading Faster-Whisper model '%s' (device=%s, compute=%s)...", config.whisper_model, device, config.whisper_compute_type)
             self._whisper_model = WhisperModel(
                 config.whisper_model,
                 device=device,
@@ -123,7 +123,7 @@ class STTEngine:
             else:
                 text = await self._transcribe_local(pcm_48k_stereo, hotwords)
         except Exception as e:
-            log.warning("STT utama (%s) gagal: %s", provider, e)
+            log.warning("Primary STT (%s) failed: %s", provider, e)
             if provider != "groq" and config.groq_api_key:
                 text = await self._transcribe_groq(pcm_48k_stereo, hotwords)
             else:
@@ -134,7 +134,7 @@ class STTEngine:
         if not norm or norm in _HALLUCINATIONS:
             return ""
         if self.echo_guard.is_echo(cleaned):
-            log.info("STT diabaikan (terdeteksi bocoran echo suara bot sendiri): '%s'", cleaned)
+            log.info("STT ignored (detected bot self-echo leak): '%s'", cleaned)
             return ""
         return cleaned
 

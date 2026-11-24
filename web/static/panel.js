@@ -19,13 +19,13 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-/* Navigasi Tab */
+/* Tab Navigation */
 const HEADINGS = {
-  overview: 'Monitor & Pikiran Karakter',
-  persona: 'Studio Persona, Lorebook & Playground',
-  bonds: 'Hubungan Sosial & Bond Ladder',
-  memory: 'Memori Hibrida & Living Notebook',
-  voice: 'Konfigurasi Suara & Karaoke',
+  overview: 'Character Monitor & Mind',
+  persona: 'Persona Studio, Lorebook & Playground',
+  bonds: 'Social Relationships & Bond Ladder',
+  memory: 'Hybrid Memory & Living Notebook',
+  voice: 'Voice & Karaoke Configuration',
 };
 
 $$('.nav-btn').forEach((btn) => {
@@ -46,7 +46,7 @@ function renderEmotions(heart) {
   const box = $('#emotion-bars');
   const entries = Object.entries(heart.active_emotions || {});
   if (!entries.length) {
-    box.innerHTML = '<p style="color:var(--text-muted); font-size:0.86rem;">Suasana hati tenang (belum ada lonjakan emosi kuat).</p>';
+    box.innerHTML = '<p style="color:var(--text-muted); font-size:0.86rem;">Mood is calm (no strong emotion spikes yet).</p>';
     return;
   }
   box.innerHTML = entries
@@ -64,7 +64,7 @@ function renderEmotions(heart) {
 function appendEvent(ev) {
   const log = $('#live-event-log');
   if (!log) return;
-  const d = new Date(ev.ts * 1000).toLocaleTimeString('id-ID', { hour12: false });
+  const d = new Date(ev.ts * 1000).toLocaleTimeString('en-GB', { hour12: false });
   const row = document.createElement('div');
   row.className = 'event-item';
   row.innerHTML = `<span class="event-ts">${d}</span><span class="event-topic">${ev.topic}</span><span class="event-body">${JSON.stringify(ev.payload)}</span>`;
@@ -76,17 +76,17 @@ async function loadStatus() {
   const s = await api('/api/status');
   $('#brand-char-name').textContent = `${s.character.display_name} Studio`;
   $('#stat-emotion').textContent = s.heart.dominant;
-  $('#stat-valence').textContent = `Valence ${s.heart.valence >= 0 ? '+' : ''}${s.heart.valence} · Energi ${Math.round(s.heart.energy * 100)}%`;
+  $('#stat-valence').textContent = `Valence ${s.heart.valence >= 0 ? '+' : ''}${s.heart.valence} · Energy ${Math.round(s.heart.energy * 100)}%`;
   $('#stat-llm').textContent = s.runtime.llm_provider;
   $('#stat-llm-model').textContent = s.runtime.ollama_model;
   $('#stat-tts').textContent = s.runtime.tts_provider;
   $('#stat-vram').textContent = s.runtime.vram_busy_with
-    ? `Dipakai: ${s.runtime.vram_busy_with}`
-    : `Siaga (${s.runtime.gpu_vram_gb} GB VRAM)`;
+    ? `Busy: ${s.runtime.vram_busy_with}`
+    : `Idle (${s.runtime.gpu_vram_gb} GB VRAM)`;
 
   autonomyPaused = s.autonomy.paused;
   const abtn = $('#btn-toggle-autonomy');
-  abtn.textContent = autonomyPaused ? '▶️ Lanjutkan Otonomi' : '⏸️ Jeda Otonomi';
+  abtn.textContent = autonomyPaused ? '▶️ Resume Autonomy' : '⏸️ Pause Autonomy';
 
   renderEmotions(s.heart);
 
@@ -97,12 +97,12 @@ async function loadStatus() {
 
   const qLines = [];
   if (s.singing.current) {
-    qLines.push(`▶️ Sedang: ${s.singing.current.title} (${s.singing.current.status})`);
+    qLines.push(`▶️ Playing: ${s.singing.current.title} (${s.singing.current.status})`);
   }
   (s.singing.queue || []).forEach((it, i) => qLines.push(`${i + 1}. ${it.query} — req: ${it.requester_name}`));
   $('#sing-queue-box').innerHTML = qLines.length
     ? qLines.map((l) => `<div class="event-item"><span class="event-body">${l}</span></div>`).join('')
-    : '<div style="color:var(--text-muted)">Antrean kosong.</div>';
+    : '<div style="color:var(--text-muted)">Queue is empty.</div>';
 }
 
 async function loadPersona() {
@@ -119,7 +119,7 @@ async function loadPeople() {
   const { people } = await api('/api/people');
   const tbody = $('#people-tbody');
   if (!people.length) {
-    tbody.innerHTML = '<tr><td colspan="6">Belum ada interaksi member tercatat.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6">No member interactions recorded yet.</td></tr>';
     return;
   }
   tbody.innerHTML = people
@@ -146,17 +146,17 @@ async function loadMemory() {
   const { notebook, memories } = await api('/api/memory');
   $('#notebook-list').innerHTML = notebook.length
     ? notebook.map((n) => `<div class="event-item"><span class="event-topic">${n.doc_key}</span><span class="event-body">${n.fact}</span></div>`).join('')
-    : '<div style="color:var(--text-muted)">Belum ada catatan di Living Notebook.</div>';
+    : '<div style="color:var(--text-muted)">No notes in Living Notebook yet.</div>';
 
   $('#memories-list').innerHTML = memories.length
     ? memories.map((m) => `<div class="event-item"><span class="event-topic">${m.scope}</span><span class="event-body">${m.content}</span></div>`).join('')
-    : '<div style="color:var(--text-muted)">Belum ada memori episodik.</div>';
+    : '<div style="color:var(--text-muted)">No episodic memories yet.</div>';
 }
 
 /* Actions */
 $('#btn-refresh-all').addEventListener('click', () => {
   loadStatus();
-  toast('Status diperbarui');
+  toast('Status refreshed');
 });
 
 $('#btn-toggle-autonomy').addEventListener('click', async () => {
@@ -165,7 +165,7 @@ $('#btn-toggle-autonomy').addEventListener('click', async () => {
     body: JSON.stringify({ autonomy_paused: !autonomyPaused }),
   });
   await loadStatus();
-  toast(autonomyPaused ? 'Otonomi dijeda' : 'Otonomi aktif');
+  toast(autonomyPaused ? 'Autonomy paused' : 'Autonomy active');
 });
 
 $('#btn-save-persona').addEventListener('click', async () => {
@@ -173,7 +173,7 @@ $('#btn-save-persona').addEventListener('click', async () => {
   try {
     lore = JSON.parse($('#inp-lore-json').value || '[]');
   } catch (e) {
-    alert('Format JSON Lorebook kurang tepat: ' + e.message);
+    alert('Invalid Lorebook JSON format: ' + e.message);
     return;
   }
   await api('/api/persona', {
@@ -188,7 +188,7 @@ $('#btn-save-persona').addEventListener('click', async () => {
     }),
   });
   await loadStatus();
-  toast('Persona & Lorebook diterapkan live!');
+  toast('Persona & Lorebook applied live!');
 });
 
 async function sendPlayground() {
@@ -197,14 +197,14 @@ async function sendPlayground() {
   if (!msg) return;
   inp.value = '';
   const box = $('#playground-log');
-  box.innerHTML += `<div class="chat-msg"><strong>Kamu:</strong> ${msg}</div>`;
+  box.innerHTML += `<div class="chat-msg"><strong>You:</strong> ${msg}</div>`;
   box.scrollTop = box.scrollHeight;
   try {
     const res = await api('/api/playground', {
       method: 'POST',
       body: JSON.stringify({ message: msg }),
     });
-    const reply = res.silent ? '*(memilih diam / <silence/>)*' : res.reply;
+    const reply = res.silent ? '*(chose silence / <silence/>)*' : res.reply;
     box.innerHTML += `<div class="chat-msg self"><strong>[${res.emotion}]:</strong> ${reply}</div>`;
     box.scrollTop = box.scrollHeight;
     loadStatus();
@@ -227,7 +227,7 @@ $('#btn-add-memory').addEventListener('click', async () => {
   });
   $('#inp-mem-fact').value = '';
   await loadMemory();
-  toast('Catatan disimpan ke Notebook!');
+  toast('Note saved to Notebook!');
 });
 
 $('#btn-save-runtime').addEventListener('click', async () => {
@@ -241,7 +241,7 @@ $('#btn-save-runtime').addEventListener('click', async () => {
     }),
   });
   await loadStatus();
-  toast('Pengaturan mesin AI diterapkan!');
+  toast('AI engine settings applied!');
 });
 
 $('#btn-song-add').addEventListener('click', async () => {
@@ -255,7 +255,7 @@ $('#btn-song-add').addEventListener('click', async () => {
 
 $('#btn-song-skip').addEventListener('click', async () => {
   await api('/api/sing/skip', { method: 'POST', body: '{}' });
-  toast('Lagu di-skip');
+  toast('Song skipped');
 });
 
 /* WebSocket Live Stream */
@@ -264,7 +264,7 @@ function connectWS() {
   const ws = new WebSocket(`${proto}//${location.host}/ws/live`);
   ws.onopen = () => {
     $('#ws-dot').classList.add('live');
-    $('#ws-state').textContent = 'Terhubung';
+    $('#ws-state').textContent = 'Connected';
   };
   ws.onmessage = (e) => {
     const ev = JSON.parse(e.data);
@@ -275,7 +275,7 @@ function connectWS() {
   };
   ws.onclose = () => {
     $('#ws-dot').classList.remove('live');
-    $('#ws-state').textContent = 'Rekoneksi...';
+    $('#ws-state').textContent = 'Reconnecting...';
     setTimeout(connectWS, 3000);
   };
 }

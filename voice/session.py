@@ -1,11 +1,11 @@
-"""Natural Voice Session Pachinko (Streaming Kalimat + Prefetch TTS + Filler + Two-Stage Smart Barge-In).
+"""Pachinko Natural Voice Session (Sentence Streaming + TTS Prefetch + Filler + Two-Stage Smart Barge-In).
 
-Fitur unggulan:
-1. `ExpressivePCMSource`: Memutar raw PCM 48kHz stereo 20ms per frame dengan:
-   - Volume ducking halus (`0.28x`) saat orang lain bicara di samping.
-   - Pause & Resume instan saat lawan bicara fokus bersuara (jika cuma gumaman "hmm/oke", lanjut bicara tanpa hilang kata!).
-   - Penghitung persentase kalimat yang sudah terdengar (`heard_ratio`) jika benar-benar dipotong (barge-in).
-2. `LinePrefetch`: Kalimat 1 langsung bicara begitu keluar dari LLM sementara kalimat 2 & 3 disintesis di latar belakang.
+Key features:
+1. `ExpressivePCMSource`: Plays raw 48kHz stereo PCM in 20ms frames with:
+   - Smooth volume ducking (`0.28x`) when someone else speaks in the background.
+   - Instant Pause & Resume when the active speaker talks (for short backchannels like "hmm/oke", resumes seamlessly without losing words!).
+   - Tracks the percentage of the sentence already heard (`heard_ratio`) if truly interrupted (barge-in).
+2. `LinePrefetch`: Sentence 1 starts speaking as soon as it leaves the LLM while sentences 2 & 3 synthesize in the background.
 """
 from __future__ import annotations
 
@@ -34,10 +34,10 @@ FRAME_BYTES = 3840  # 20ms @ 48kHz stereo int16
 
 
 class ExpressivePCMSource(discord.AudioSource):
-    """AudioSource PCM yang mendukung Ducking, Pause/Resume tanpa potong, & rasio kata terdengar."""
+    """PCM AudioSource supporting Ducking, seamless Pause/Resume, & heard-word ratio."""
 
     def __init__(self, pcm_data: bytes, text: str) -> None:
-        # Ratakan ke kelipatan 3840 byte
+        # Pad to a multiple of 3840 bytes
         rem = len(pcm_data) % FRAME_BYTES
         if rem:
             pcm_data += bytes(FRAME_BYTES - rem)
@@ -165,7 +165,7 @@ class NaturalVoiceSession:
         if self.vc.is_connected():
             await self.vc.disconnect(force=True)
 
-    # ---------------- Tahap 1 Smart Barge-In (Saat VAD mendeteksi suara) ----------------
+    # ---------------- Stage 1 Smart Barge-In (When VAD detects speech) ----------------
     def _on_speech_activity(self, user, voiced_ms: int) -> None:
         if not config.allow_barge_in or self.singing_active:
             return
@@ -175,17 +175,17 @@ class NaturalVoiceSession:
 
         is_focus = self.focus_user_id is None or user.id == self.focus_user_id
         if not is_focus:
-            # Orang lain bicara di latar: kecilkan volume (ducking) tanpa memotong kalimat
+            # Someone else talking in the background: lower volume (ducking) without cutting off
             if voiced_ms >= 240:
                 src.set_duck(True)
             return
 
-        # Lawan bicara utama bersuara: tahan sebentar (pause) pada 320ms, potong penuh jika bicara panjang >= 2200ms
+        # Primary speaker is talking: pause briefly at 320ms, hard-cut if long speech >= 2200ms
         if voiced_ms >= 2200:
             self._abort_current_speech(reason="long_focus_speech")
         elif voiced_ms >= 320 and not src.paused:
             src.pause()
-            # Jika dalam 2.2 detik tidak ada transkrip bermakna (misal batuk), lanjutkan otomatis
+            # If no meaningful transcript arrives within 2.2s (e.g. a cough), auto-resume
             self.loop.call_later(2.2, self._auto_resume_if_still_paused, src)
 
     def _auto_resume_if_still_paused(self, src: ExpressivePCMSource) -> None:
@@ -203,9 +203,9 @@ class NaturalVoiceSession:
             src.stop_now()
         if self.vc.is_playing():
             self.vc.stop()
-        log.info("Bicara bot dihentikan (%s)", reason)
+        log.info("Bot speech stopped (%s)", reason)
 
-    # ---------------- Tahap 2 Smart Barge-In & Utterance Queue ----------------
+    # ---------------- Stage 2 Smart Barge-In & Utterance Queue ----------------
     async def _on_utterance(self, user, pcm: bytes) -> None:
         await self._utterance_q.put((user, pcm))
 
@@ -224,7 +224,7 @@ class NaturalVoiceSession:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("Gagal memproses ucapan voice dari %s", user)
+                log.exception("Failed to process voice utterance from %s", user)
 
     async def _process_utterance(self, user, pcm: bytes) -> None:
         prof = self.profiles.current
@@ -237,7 +237,7 @@ class NaturalVoiceSession:
 
         src = self._current_source
         if not raw_text:
-            # Noise kosong: bila tadi sempat pause/duck, lanjutkan bicara dengan mulus!
+            # Empty noise: if paused/ducked earlier, resume smoothly!
             if src:
                 src.resume()
                 src.set_duck(False)
@@ -247,22 +247,22 @@ class NaturalVoiceSession:
         speaker_name = getattr(user, "display_name", None) or user.name
         addressed = self.triage.is_addressed(text, prof)
 
-        # Saat sedang bernyanyi (karaoke), abaikan obrolan kecuali namanya dipanggil jelas
+        # While singing (karaoke), ignore chatter unless called by name clearly
         if self.singing_active and not addressed:
             return
 
-        # Tahap 2 Smart Barge-In: cek apakah ucapan tadi cuma gumaman ("hmm", "iya", "oke")
+        # Stage 2 Smart Barge-In: check if the utterance was just a backchannel ("hmm", "iya", "oke")
         if src and self.vc.is_playing():
             is_focus = self.focus_user_id is None or user.id == self.focus_user_id
             if self._is_backchannel(text) and not addressed:
-                log.info("[%s] gumaman backchannel '%s' -> lanjut bicara tanpa memotong.", speaker_name, text)
+                log.info("[%s] backchannel '%s' -> resume speaking without cutting off.", speaker_name, text)
                 src.resume()
                 src.set_duck(False)
                 return
             if not is_focus and not addressed:
                 src.set_duck(False)
                 return
-            # Benar-benar memotong pembicaraan!
+            # Genuine interruption!
             self._abort_current_speech(reason=f"interrupted_by:{speaker_name}")
             if self._active_turn_task and not self._active_turn_task.done():
                 self._active_turn_task.cancel()
@@ -291,7 +291,7 @@ class NaturalVoiceSession:
         audio_q: asyncio.Queue[tuple[str, str, asyncio.Task[bytes]] | None] = asyncio.Queue()
         first_sentence_ready = asyncio.Event()
 
-        # Filler otomatis ("Hmm?", "Eh, bentar...") jika LLM/tool berpikir lebih lama dari `filler_delay_ms`
+        # Auto-filler ("Hmm?", "Eh, bentar...") if LLM/tool thinks longer than `filler_delay_ms`
         async def _filler_watch() -> None:
             if not config.filler_enabled or not prof.filler_phrases:
                 return
@@ -318,7 +318,7 @@ class NaturalVoiceSession:
                         break
                     aside_urls_all.extend(urls)
                     full_sentences.append(sentence)
-                    # Mulai sintesis TTS di latar belakang segera (LinePrefetch)!
+                    # Start TTS synthesis in background immediately (LinePrefetch)!
                     synth_task = asyncio.create_task(self.tts.synthesize_pcm(sentence, emotion=emo))
                     await audio_q.put((sentence, emo, synth_task))
             finally:
@@ -348,7 +348,7 @@ class NaturalVoiceSession:
             if not prod_task.done():
                 prod_task.cancel()
 
-        # Jika terpotong di tengah jalan, perbarui transkrip hanya dengan kata yang sempat terdengar
+        # If interrupted mid-way, update transcript with only the words actually heard
         if self._barge_triggered.is_set() and getattr(self.brain, "_last_voice_transcript_id", None):
             heard = " ".join(self._spoken_so_far).strip()
             await self.memory.mark_interrupted(self.brain._last_voice_transcript_id, heard)
@@ -381,7 +381,7 @@ class NaturalVoiceSession:
         return not src.stopped
 
     async def speak_direct_text(self, speaker_name: str, user_id: str, prompt_text: str) -> str:
-        """Dipakai oleh `/say`: respons penuh + diputar ke voice channel."""
+        """Used by `/say`: full response + played to the voice channel."""
         collected: list[str] = []
         async for sentence, emo, _ in self.brain.stream_voice_turn(
             room_id=self.room_id,

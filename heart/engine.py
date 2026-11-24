@@ -1,9 +1,9 @@
-"""Heart Engine: Simulasi emosi dinamis (peluruhan half-life) & 9-Axis Relationship / Bond Ladder.
+"""Heart Engine: Dynamic emotion simulation (half-life decay) & 9-Axis Relationship / Bond Ladder.
 
-Mekanisme utama:
-- Di akhir responsnya, LLM dapat mengusulkan `<feel>self: joy medium | user: bond +, warmth +</feel>`.
-- Kode ini yang memegang kendali: menerapkan redaman geometris harian (`0.75^n`) dan batas harian
-  agar rasa suka/dekat tumbuh alami seiring waktu, bukan langsung penuh dalam beberapa chat.
+Core mechanism:
+- At the end of its reply, the LLM may propose `<feel>self: joy medium | user: bond +, warmth +</feel>`.
+- This module holds the reins: applying daily geometric damping (`0.75^n`) and daily caps
+  so affection/closeness grows naturally over time instead of maxing out in a few chats.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ EMOTION_KEYS = (
     "shy", "pride", "smug", "lonely", "curious", "grateful", "annoyed",
 )
 
-# Peta emosi internal -> ekspresi suara standar (9 ekspresi)
+# Internal emotion -> standard voice expression map (9 expressions)
 EMOTION_TO_EXPRESSION = {
     "joy": "happy",
     "grateful": "happy",
@@ -65,7 +65,7 @@ def bond_tier_name(bond: float) -> str:
 
 
 def extract_tags(raw_text: str) -> tuple[str, str | None, str | None]:
-    """Pisahkan teks bersih dari `<emo:...>` dan `<feel>...</feel>`."""
+    """Extract clean text from `<emo:...>` and `<feel>...</feel>`."""
     emo_match = _EMO_RE.search(raw_text)
     emo = emo_match.group(1).lower() if emo_match else None
 
@@ -114,7 +114,7 @@ class HeartEngine:
             self.emotions[k] = round(self.emotions[k] * factor, 4)
             if self.emotions[k] < 0.02:
                 self.emotions[k] = 0.0
-        # Energi pulih perlahan saat istirahat
+        # Energy recovers slowly while resting
         self.energy = min(1.0, self.energy + 0.004 * elapsed_mins)
         self._recompute_mood()
         self.last_update = now
@@ -131,7 +131,7 @@ class HeartEngine:
         best_k, best_v = max(self.emotions.items(), key=lambda kv: kv[1])
         if best_v < 0.15:
             return "neutral"
-        # Tsundere masking: kalau malu/senang tipis suka ditutup ekspresi smug
+        # Tsundere masking: slight shyness/joy tends to be masked with shy expression
         if temperament == "tsundere" and best_k == "joy" and self.emotions["shy"] > 0.2:
             return "shy"
         return EMOTION_TO_EXPRESSION.get(best_k, "neutral")
@@ -187,7 +187,7 @@ class HeartEngine:
         return out
 
     async def touch_interaction(self, user_id: str, display_name: str, modality: str = "text") -> dict[str, Any]:
-        """Catat interaksi & beri kenaikan keakraban dasar yang diredam per hari."""
+        """Record interaction & apply daily-damped baseline familiarity gain."""
         person = await self.get_person(user_id, display_name)
         today = dt.date.today().isoformat()
         counts = json.loads(person["daily_counts_json"] or "{}") if person["daily_date"] == today else {}
@@ -218,7 +218,7 @@ class HeartEngine:
         display_name: str = "User",
         temperament: str = "tsundere",
     ) -> str:
-        """Proses tag `<emo:...>` & `<feel>...</feel>` dengan rate-limit geometris."""
+        """Process `<emo:...>` & `<feel>...</feel>` tags with geometric rate-limiting."""
         self._apply_decay()
 
         if explicit_emo:

@@ -1,13 +1,13 @@
-"""Mesin Text-to-Speech Multi-Backend + Auto-Download Piper ONNX + Cache Filler + Hook RVC.
+"""Multi-Backend Text-to-Speech Engine + Auto-Download Piper ONNX + Filler Cache + RVC Hook.
 
-Mendukung:
-1. `piper`      : 100% Lokal Offline ONNX (`id_ID-news_tts-medium.onnx`, otomatis diunduh jika belum ada).
-2. `edge`       : Suara Neural Bahasa Indonesia ekspresif (`id-ID-GadisNeural`) gratis 100% tanpa kuota & 0 VRAM,
-                  otomatis fallback ke `piper` lokal bila offline!
-3. `elevenlabs` : Opsional bila user mengisi API key + Voice ID.
-+ Opsional Post-Processing RVC Lokal (`RVC_ENABLED=true`) untuk mengubah warna suara ke model karakter `.pth`/`.onnx`.
+Supports:
+1. `piper`      : 100% Local Offline ONNX (`id_ID-news_tts-medium.onnx`, auto-downloaded if missing).
+2. `edge`       : Expressive Indonesian Neural Voice (`id-ID-GadisNeural`), 100% free without quota & 0 VRAM,
+                  automatically falls back to local `piper` when offline!
+3. `elevenlabs` : Optional if the user provides an API key + Voice ID.
++ Optional Local RVC Post-Processing (`RVC_ENABLED=true`) to convert voice timbre to a `.pth`/`.onnx` character model.
 
-Semua output dikonversi menjadi **PCM 48kHz Stereo s16le** agar siap diputar dengan kontrol pause/duck real-time.
+All output is converted to **PCM 48kHz Stereo s16le** for real-time pause/duck playback control.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ FILLER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def audio_bytes_to_pcm48k(raw_audio: bytes, input_fmt: str = "mp3") -> bytes:
-    """Decode MP3/WAV apa pun menjadi raw PCM 48kHz stereo int16 memakai FFmpeg di memori."""
+    """Decode any MP3/WAV into raw PCM 48kHz stereo int16 using FFmpeg in memory."""
     proc = subprocess.run(
         [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -70,14 +70,14 @@ class TTSEngine:
             dest = target_dir / fname
             if not dest.exists():
                 url = f"{PIPER_HF_BASE}/{fname}"
-                log.info("Mengunduh suara lokal Piper Indonesia: %s ...", fname)
+                log.info("Downloading local Indonesian Piper voice: %s ...", fname)
                 r = await self._http.get(url)
                 r.raise_for_status()
                 dest.write_bytes(r.content)
         return target_dir / PIPER_DEFAULT_FILES[0]
 
     async def synthesize_pcm(self, text: str, *, emotion: str = "neutral") -> bytes:
-        """Hasilkan raw PCM 48kHz stereo int16 dari satu kalimat."""
+        """Generate raw PCM 48kHz stereo int16 from a single sentence."""
         clean = text.strip()
         if not clean:
             return b""
@@ -94,7 +94,7 @@ class TTSEngine:
             else:
                 wav_or_mp3, fmt = await self._synth_edge(clean, emotion=emotion), "mp3"
         except Exception as e:
-            log.warning("TTS '%s' gagal (%s), fallback ke Piper lokal offline...", provider, e)
+            log.warning("TTS '%s' failed (%s), falling back to local offline Piper...", provider, e)
             wav_or_mp3, fmt = await self._synth_piper(clean), "wav"
 
         if config.rvc_enabled:
@@ -103,7 +103,7 @@ class TTSEngine:
         return await asyncio.to_thread(audio_bytes_to_pcm48k, wav_or_mp3, fmt)
 
     async def get_filler_pcm(self, phrase: str) -> bytes:
-        """Ambil (atau buat sekali lalu simpan di disk) klip suara pendek 'Hmm?' tanpa jeda."""
+        """Fetch (or generate once and cache on disk) a short 'Hmm?' filler clip with zero delay."""
         key = hashlib.md5(f"{config.tts_provider}:{config.edge_tts_voice}:{phrase}".encode()).hexdigest()[:12]
         cache_file = FILLER_CACHE_DIR / f"{key}.pcm"
         if cache_file.exists():
@@ -116,7 +116,7 @@ class TTSEngine:
     async def _synth_edge(self, text: str, emotion: str = "neutral") -> bytes:
         import edge_tts
 
-        # Variasi ekspresi halus berdasarkan mood karakter
+        # Subtle expression variations based on character mood
         pitch = config.edge_tts_pitch
         rate = config.edge_tts_rate
         if emotion in ("happy", "surprised"):
@@ -135,7 +135,7 @@ class TTSEngine:
             if chunk["type"] == "audio":
                 out.extend(chunk["data"])
         if not out:
-            raise RuntimeError("Edge TTS mengembalikan audio kosong")
+            raise RuntimeError("Edge TTS returned empty audio")
         return bytes(out)
 
     async def _synth_piper(self, text: str) -> bytes:
@@ -171,7 +171,7 @@ class TTSEngine:
         return r.content
 
     async def _apply_rvc_if_available(self, audio_bytes: bytes, fmt: str) -> tuple[bytes, str]:
-        """Jika server lokal RVC / Applio aktif, konversi warna suara ke karakter RVC."""
+        """If a local RVC / Applio server is active, convert voice timbre to the RVC character."""
         try:
             with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp_in:
                 tmp_in.write(audio_bytes)
@@ -189,5 +189,5 @@ class TTSEngine:
             if r.status_code == 200 and r.content:
                 return r.content, "wav"
         except Exception as e:
-            log.debug("RVC dilewati (%s), memakai suara dasar TTS.", e)
+            log.debug("RVC skipped (%s), using base TTS voice.", e)
         return audio_bytes, fmt

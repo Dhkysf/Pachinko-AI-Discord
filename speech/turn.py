@@ -1,11 +1,11 @@
 """Smart Prosodic Turn-Taking & Parked-Stream Audio Segmenter.
 
-Mengapa lebih pintar dari VAD biasa:
-1. **Parked Stream**: Jika user berhenti bicara 0,5 detik karena sedang mikir di tengah kalimat,
-   buffer suaranya "diparkir" dan disambung utuh saat ia lanjut bicara (tidak terpotong jadi dua).
-2. **Prosodic Endpointing**: Menganalisis kemiringan energi (apakah intonasi/volume turun wajar
-   seperti akhir kalimat -> potong cepat `turn_fast_silence_ms`, atau menggantung rata di tengah
-   pikir -> tunggu lebih sabar sampai `turn_max_silence_ms`).
+Why it is smarter than plain VAD:
+1. **Parked Stream**: If a user pauses for 0.5s while thinking mid-sentence,
+   the audio buffer is "parked" and joined seamlessly when they resume speaking (never split in two).
+2. **Prosodic Endpointing**: Analyzes energy slope (whether intonation/volume drops naturally
+   like the end of a sentence -> fast cut at `turn_fast_silence_ms`, or stays flat mid-thought
+   -> waits patiently up to `turn_max_silence_ms`).
 """
 from __future__ import annotations
 
@@ -24,17 +24,17 @@ BYTES_PER_MS = (SAMPLE_RATE * CHANNELS * 2) // 1000  # 192 bytes/ms
 
 
 def analyze_end_of_turn(pcm_48k_stereo: bytes) -> float:
-    """Kembalikan skor keyakinan (0.0 .. 1.0) bahwa pembicara sudah selesai bicara.
+    """Return confidence score (0.0 .. 1.0) that the speaker has finished talking.
 
-    Skor >= 0.55 berarti akhir kalimat wajar (energi ekor melandai turun).
-    Skor < 0.55 berarti kemungkinan jeda mikir di tengah kalimat (energi menggantung tinggi).
+    Score >= 0.55 means a natural sentence end (tail energy slopes down).
+    Score < 0.55 means a likely mid-sentence thinking pause (energy stays high).
     """
     samples = np.frombuffer(pcm_48k_stereo, dtype=np.int16)
-    if samples.size < SAMPLE_RATE:  # < 0.5 detik
+    if samples.size < SAMPLE_RATE:  # < 0.5 seconds
         return 0.65
     mono = samples.reshape(-1, 2).mean(axis=1).astype(np.float32)
 
-    # Ambil 600ms terakhir yang bersuara, bandingkan paruh awal vs paruh ekor
+    # Take the last 600ms of voiced audio, compare first half vs tail half
     tail_len = min(mono.size, int(0.6 * SAMPLE_RATE))
     tail = mono[-tail_len:]
     half = tail.size // 2
@@ -42,7 +42,7 @@ def analyze_end_of_turn(pcm_48k_stereo: bytes) -> float:
     rms_last = float(np.sqrt(np.mean(tail[half:] ** 2)) + 1e-6)
     drop_ratio = rms_last / rms_first
 
-    # Jika ekor turun (< 0.78x energi sebelumnya), kemungkinan besar akhir klausa/kalimat
+    # If tail drops (< 0.72x earlier energy), likely end of clause/sentence
     if drop_ratio < 0.72:
         return 0.82
     if drop_ratio < 0.90:
@@ -112,7 +112,7 @@ class SmartTurnSink(Sink):
             if tr is None:
                 tr = self._tracks[user.id] = _SpeakerTrack(user=user)
 
-            # Sisipkan hening sintetis pendek jika sempat jeda paket < max_silence (Parked Stream)
+            # Insert short synthetic silence if packet gap < max_silence (Parked Stream)
             if tr.speaking and tr.last_voice_ts > 0:
                 gap_s = now - tr.last_voice_ts
                 if 0.08 < gap_s < self.max_silence_s:
@@ -149,7 +149,7 @@ class SmartTurnSink(Sink):
                     if silence_s >= self.max_silence_s:
                         self._emit_locked(tr)
                     else:
-                        # Cek prosodi apakah kalimat sudah tuntas atau masih mikir
+                        # Check prosody whether sentence is complete or still thinking
                         conf = analyze_end_of_turn(bytes(tr.buf))
                         if conf >= 0.58:
                             self._emit_locked(tr)

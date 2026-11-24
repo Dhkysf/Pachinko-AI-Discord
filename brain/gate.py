@@ -1,9 +1,9 @@
 """Autonomy & Action Risk Gate.
 
-Setiap aksi berdampak (tool call / inisiatif mandiri) melewati Gate:
-- `low`    : Jalan langsung (cari info, catat memori, ganti ekspresi).
-- `medium` : Dibatasi cooldown & cek izin privasi (pasang timer, antre lagu).
-- `high`   : Masuk antrean persetujuan Owner (bisa di-approve lewat Discord / Web Panel).
+Every impactful action (tool call / autonomous initiative) passes through the Gate:
+- `low`    : Runs immediately (web search, memory note, expression change).
+- `medium` : Cooldown-limited & privacy-checked (set reminder, queue song).
+- `high`   : Queued for Owner approval (approvable via Discord / Web Panel).
 """
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ class ActionGate:
     ) -> tuple[bool, str]:
         if is_autonomous and self.paused:
             await self.bus.emit("gate.decision", capability=capability, verdict="deny", reason="autonomy_paused")
-            return False, "Otonomi sedang dijeda oleh admin."
+            return False, "Autonomy is currently paused by admin."
 
         risk = RISK_LEVELS.get(capability, "medium")
         is_owner = requester_id.isdigit() and int(requester_id) in config.owner_ids
@@ -78,7 +78,7 @@ class ActionGate:
             now = time.time()
             last = self._cooldowns.get(cd_key, 0.0)
             if not is_owner and now - last < 8.0:
-                return False, f"Tunggu sebentar sebelum memakai `{capability}` lagi."
+                return False, f"Wait a moment before using `{capability}` again."
             self._cooldowns[cd_key] = now
 
         if risk == "high" and not is_owner:
@@ -88,12 +88,12 @@ class ActionGate:
                 args=args,
                 requester_id=requester_id,
                 requester_name=requester_name,
-                reason="Aksi berisiko tinggi membutuhkan izin owner",
+                reason="High-risk action requires owner approval",
                 created_at=time.time(),
             )
             self.approvals[req.id] = req
             await self.bus.emit("gate.approval_requested", **asdict(req))
-            return False, f"Aksi `{capability}` menunggu persetujuan owner (ID: {req.id})."
+            return False, f"Action `{capability}` is awaiting owner approval (ID: {req.id})."
 
         await self.bus.emit("gate.decision", capability=capability, verdict="allow", risk=risk, user=requester_name)
         return True, "ok"

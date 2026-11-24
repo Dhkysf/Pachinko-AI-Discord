@@ -1,4 +1,4 @@
-"""Play & Economy: Buku Besar Koin (`koin`), Daily Check-in + Ramalan, Gacha Kartu Koleksi SVG, & Party Games."""
+"""Play & Economy: Coin Ledger (`koin`), Daily Check-in + Fortune, SVG Collectible Card Gacha, & Party Games."""
 from __future__ import annotations
 
 import datetime as dt
@@ -38,7 +38,7 @@ TRIVIA_BANK = [
 
 
 def render_card_svg(card: dict[str, Any], owner_name: str, char_name: str) -> str:
-    """Buat kartu koleksi SVG tajam tanpa dependensi eksternal."""
+    """Render a sharp SVG collectible card with zero external dependencies."""
     colors = {
         "UR": ("#f59e0b", "#78350f"),
         "SSR": ("#14b8a6", "#134e4a"),
@@ -74,7 +74,7 @@ class EconomyAndPlay:
         self.store = store
         self.bus = bus
         self.heart = heart
-        self.active_trivia: dict[str, tuple[str, list[str], int]] = {}  # room_id -> (soal, jawaban, hadiah)
+        self.active_trivia: dict[str, tuple[str, list[str], int]] = {}  # room_id -> (question, answers, prize)
 
     async def get_wallet(self, user_id: str, display_name: str = "User") -> dict[str, Any]:
         uid = str(user_id)

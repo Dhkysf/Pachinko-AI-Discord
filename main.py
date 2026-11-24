@@ -1,4 +1,4 @@
-"""Entrypoint Utama Pachinko: Menjalankan Core, Web Admin Panel (:7878), Singing, & Discord Bot dalam satu proses."""
+"""Pachinko Main Entrypoint: Runs Core, Web Admin Panel (:7878), Singing, & Discord Bot in one process."""
 from __future__ import annotations
 
 import asyncio
@@ -97,11 +97,11 @@ async def run_all() -> None:
     )
     uvi_server = uvicorn.Server(uvi_cfg)
     web_task = asyncio.create_task(uvi_server.serve())
-    log.info("🌐 Web Admin Panel aktif di: http://%s:%d", config.panel_host, config.panel_port)
+    log.info("🌐 Web Admin Panel active at: http://%s:%d", config.panel_host, config.panel_port)
 
     try:
         if not config.discord_token:
-            log.warning("DISCORD_TOKEN belum diisi di .env — menjalankan Mode Web Panel & Playground saja.")
+            log.warning("DISCORD_TOKEN is not set in .env — running Web Panel & Playground mode only.")
             await web_task
             return
 
@@ -124,9 +124,9 @@ async def run_all() -> None:
             await bot.start(config.discord_token)
         except discord.PrivilegedIntentsRequired:
             log.warning(
-                "⚠️ Message Content Intent belum diaktifkan di Discord Developer Portal! "
-                "Menjalankan ulang dalam mode Voice + Slash Command saja. "
-                "(Aktifkan 'Message Content Intent' di tab Bot Developer Portal supaya bot bisa baca obrolan teks biasa)."
+                "⚠️ Message Content Intent is not enabled in the Discord Developer Portal! "
+                "Restarting in Voice + Slash Command mode only. "
+                "(Enable 'Message Content Intent' in the Developer Portal Bot tab so the bot can read regular text chat)."
             )
             await bot.close()
             bot2 = build_discord_bot(
@@ -157,5 +157,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(run_all())
     except KeyboardInterrupt:
-        print("\nPachinko dihentikan dengan aman.")
+        print("\nPachinko stopped safely.")
         sys.exit(0)

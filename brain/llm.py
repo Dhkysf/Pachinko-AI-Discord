@@ -1,9 +1,9 @@
-"""Klien LLM Multi-Provider dengan Streaming Token & Tool Calling.
+"""Multi-Provider LLM Client with Token Streaming & Tool Calling.
 
-Mendukung:
-1. `ollama`        : Lokal penuh di AMD RX 9070 16GB (`/api/chat`, `think: False` untuk voice agar super cepat).
-2. `openai_compat` : LM Studio / llama.cpp / vLLM lokal (`/v1/chat/completions`).
-3. `gemini`        : Cloud opsional / cadangan (`google-genai`).
+Supports:
+1. `ollama`        : Fully local on AMD RX 9070 16GB (`/api/chat`, `think: False` for fast voice).
+2. `openai_compat` : Local LM Studio / llama.cpp / vLLM (`/v1/chat/completions`).
+3. `gemini`        : Optional / fallback cloud (`google-genai`).
 """
 from __future__ import annotations
 
@@ -100,9 +100,9 @@ class LLMClient:
             if provider == "gemini":
                 return await self._gemini_once(messages)
         except Exception as e:
-            log.warning("Provider utama '%s' gagal (%s), cek fallback...", provider, e)
+            log.warning("Primary provider '%s' failed (%s), checking fallback...", provider, e)
             if provider != "gemini" and config.gemini_api_key:
-                log.info("Fallback ke Gemini API...")
+                log.info("Falling back to Gemini API...")
                 return await self._gemini_once(messages)
             raise
         return await self._ollama_once(messages, tools=tools, fast_voice=fast_voice)
@@ -113,7 +113,7 @@ class LLMClient:
         *,
         fast_voice: bool = True,
     ) -> AsyncIterator[str]:
-        """Stream token demi token untuk respons kalimat real-time di Voice."""
+        """Stream tokens one by one for real-time voice sentence responses."""
         provider = config.llm_provider
         try:
             if provider == "ollama":
@@ -125,7 +125,7 @@ class LLMClient:
                     yield tok
                 return
         except Exception as e:
-            log.warning("Streaming '%s' gagal (%s), coba fallback...", provider, e)
+            log.warning("Streaming '%s' failed (%s), trying fallback...", provider, e)
             if config.gemini_api_key:
                 resp = await self._gemini_once(messages)
                 if resp.text:
@@ -149,7 +149,7 @@ class LLMClient:
             "messages": normalize_messages(messages),
             "stream": False,
             "keep_alive": config.ollama_keep_alive,
-            "think": False,  # Matikan chain-of-thought panjang agar respons instan
+            "think": False,  # Disable long chain-of-thought for instant replies
             "options": {
                 "temperature": 0.82,
                 "num_predict": 320 if fast_voice else 650,
@@ -279,7 +279,7 @@ class LLMClient:
         from google.genai import types
 
         if not config.gemini_api_key:
-            raise RuntimeError("GEMINI_API_KEY kosong dan Ollama lokal tidak merespons.")
+            raise RuntimeError("GEMINI_API_KEY is empty and local Ollama is not responding.")
 
         client = genai.Client(api_key=config.gemini_api_key)
         sys_chunks: list[str] = []
@@ -304,5 +304,5 @@ class LLMClient:
                 )
                 return LLMResponse(text=(resp.text or "").strip())
             except Exception as e:
-                log.warning("Gemini model '%s' gagal: %s", model, e)
-        raise RuntimeError("Semua model Gemini gagal.")
+                log.warning("Gemini model '%s' failed: %s", model, e)
+        raise RuntimeError("All Gemini models failed.")

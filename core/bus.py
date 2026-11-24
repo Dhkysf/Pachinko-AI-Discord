@@ -1,7 +1,7 @@
-"""EventBus asinkron untuk menghubungkan semua modul secara longgar (decoupled).
+"""Asynchronous EventBus for loosely coupling all modules.
 
-Semua kejadian penting (chat, voice, emosi berubah, bond naik, keputusan otak)
-lewat di sini dan otomatis disiarkan ke Web Panel.
+All important events (chat, voice, emotion changes, bond gains, brain decisions)
+flow through here and are automatically broadcast to the Web Panel.
 """
 from __future__ import annotations
 

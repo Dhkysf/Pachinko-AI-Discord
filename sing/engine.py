@@ -1,11 +1,11 @@
-"""AI Singing Engine (terintegrasi Koordinator VRAM RX 9070 16GB).
+"""AI Singing Engine (integrated with RX 9070 16GB VRAM Coordinator).
 
-Cara kerja:
-1. User request lagu lewat `/sing <judul/URL YouTube>` atau lewat obrolan suara (`queue_song`).
-2. Mengunduh audio menggunakan `yt-dlp` ke cache `data/songs/`.
-3. Meminjam VRAM eksklusif lewat `vram_guard.lease_heavy_gpu("singing")` (melepas Ollama dari VRAM RX 9070):
-   - Jika `RVC_ENABLED=true` dan `audio-separator` tersedia, memisahkan vokal (DirectML GPU) -> konversi suara RVC -> mixing ulang bersama instrumen pada -16 LUFS!
-   - Jika RVC belum diaktifkan, otomatis memutar lagu langsung di voice channel Discord!
+How it works:
+1. User requests a song via `/sing <title/YouTube URL>` or voice chat (`queue_song`).
+2. Downloads audio via `yt-dlp` into the `data/songs/` cache.
+3. Acquires an exclusive VRAM lease via `vram_guard.lease_heavy_gpu("singing")` (offloading Ollama from RX 9070 VRAM):
+   - If `RVC_ENABLED=true` and `audio-separator` is available, separates vocals (DirectML GPU) -> converts voice via RVC -> remixes with instrumental at -16 LUFS!
+   - If RVC is not enabled, plays the song directly in the Discord voice channel!
 """
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ class SingingEngine:
                 raise
             except Exception as e:
                 item.status = "failed"
-                log.exception("Gagal memutar lagu '%s'", item.query)
+                log.exception("Failed to play song '%s'", item.query)
                 await self.bus.emit("sing.failed", id=item.id, error=str(e))
             finally:
                 self.current = None
@@ -113,7 +113,7 @@ class SingingEngine:
     async def _perform_song(self, item: SongItem) -> None:
         session = self._session_getter(item.room_id) if self._session_getter else None
         if not session or not session.vc.is_connected():
-            log.warning("Tidak ada sesi voice aktif di %s untuk menyanyikan '%s'", item.room_id, item.query)
+            log.warning("No active voice session in %s to sing '%s'", item.room_id, item.query)
             return
 
         item.status = "preparing"
@@ -170,7 +170,7 @@ class SingingEngine:
         return await asyncio.to_thread(_yt_sync)
 
     async def _try_rvc_cover_pipeline(self, source_audio: Path) -> Path:
-        """Jika `audio-separator` + server RVC tersedia, pisahkan vokal & buat AI cover."""
+        """If `audio-separator` + RVC server are available, separate vocals & render an AI cover."""
         cover_out = source_audio.with_name(source_audio.stem + "_cover.wav")
         if cover_out.exists():
             return cover_out
@@ -209,5 +209,5 @@ class SingingEngine:
                 )
                 return cover_out
         except Exception as e:
-            log.info("Pipeline RVC penuh belum aktif (%s), lanjut memutar trek asli.", e)
+            log.info("Full RVC pipeline not active (%s), playing original track.", e)
         return source_audio

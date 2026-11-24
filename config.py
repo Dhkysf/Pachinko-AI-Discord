@@ -1,4 +1,4 @@
-"""Konfigurasi utama Pachinko (dioptimalkan untuk Windows + AMD RX 9070 16GB)."""
+"""Main Pachinko configuration (optimized for Windows + AMD RX 9070 16GB)."""
 from __future__ import annotations
 
 import os
@@ -45,14 +45,14 @@ class AppConfig:
         default_factory=lambda: tuple(int(x) for x in _csv("OWNER_IDS") if x.isdigit())
     )
 
-    # --- Karakter & Database ---
+    # --- Character & Database ---
     profile_id: str = field(default_factory=lambda: os.getenv("PROFILE_ID", "default"))
     db_path: Path = field(
         default_factory=lambda: Path(os.getenv("DB_PATH", "").strip() or str(DATA_DIR / "pachinko.db"))
     )
 
-    # --- LLM (Default: Lokal via Ollama di RX 9070 16GB, dengan opsional Gemini/OpenAI) ---
-    # Pilihan: "ollama" | "openai_compat" | "gemini"
+    # --- LLM (Default: Local via Ollama on RX 9070 16GB, with optional Gemini/OpenAI) ---
+    # Options: "ollama" | "openai_compat" | "gemini"
     llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "ollama").lower())
     ollama_base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:8b"))
@@ -68,8 +68,8 @@ class AppConfig:
         default_factory=lambda: _csv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite")
     )
 
-    # --- STT / ASR (Default: Lokal Faster-Whisper, opsional Groq) ---
-    # Pilihan: "local_whisper" | "groq"
+    # --- STT / ASR (Default: Local Faster-Whisper, optional Groq) ---
+    # Options: "local_whisper" | "groq"
     stt_provider: str = field(default_factory=lambda: os.getenv("STT_PROVIDER", "local_whisper").lower())
     whisper_model: str = field(default_factory=lambda: os.getenv("WHISPER_MODEL", "small"))
     whisper_device: str = field(default_factory=lambda: os.getenv("WHISPER_DEVICE", "auto"))
@@ -78,8 +78,8 @@ class AppConfig:
     groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", "").strip())
     groq_stt_model: str = field(default_factory=lambda: os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo"))
 
-    # --- TTS (Default: "piper" 100% offline ONNX atau "edge" neural Indo gratis, + opsional RVC clone) ---
-    # Pilihan: "piper" | "edge" | "kokoro" | "elevenlabs"
+    # --- TTS (Default: "piper" 100% offline ONNX or "edge" free Indonesian neural, + optional RVC clone) ---
+    # Options: "piper" | "edge" | "kokoro" | "elevenlabs"
     tts_provider: str = field(default_factory=lambda: os.getenv("TTS_PROVIDER", "edge").lower())
     piper_model_path: Path = field(
         default_factory=lambda: Path(
@@ -94,7 +94,7 @@ class AppConfig:
     elevenlabs_voice_id: str = field(default_factory=lambda: os.getenv("ELEVENLABS_VOICE_ID", "").strip())
     elevenlabs_model: str = field(default_factory=lambda: os.getenv("ELEVENLABS_MODEL", "eleven_flash_v2_5"))
 
-    # Opsional konversi suara karakter lokal (Applio / RVC HTTP atau CLI)
+    # Optional local character voice conversion (Applio / RVC HTTP or CLI)
     rvc_enabled: bool = field(default_factory=lambda: _bool("RVC_ENABLED", False))
     rvc_api_url: str = field(default_factory=lambda: os.getenv("RVC_API_URL", "http://127.0.0.1:7897"))
     rvc_model_path: str = field(default_factory=lambda: os.getenv("RVC_MODEL_PATH", ""))

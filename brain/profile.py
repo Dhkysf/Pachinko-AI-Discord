@@ -1,4 +1,4 @@
-"""Loader Profil Karakter (`profile.toml`, `identity.md`, `style.md`, `examples.md`, `lorebook.toml`) + Override Panel."""
+"""Character Profile Loader (`profile.toml`, `identity.md`, `style.md`, `examples.md`, `lorebook.toml`) + Panel Overrides."""
 from __future__ import annotations
 
 import random

@@ -5,7 +5,7 @@ import copy
 import unittest
 
 from brain.profile import CharacterProfile
-from brain.prompt import _VOICE_EXTRA_RULES, assemble_messages
+from brain.prompt import _LANGUAGE_RULE, _VOICE_EXTRA_RULES, assemble_messages
 
 
 def _make_profile() -> CharacterProfile:
@@ -66,6 +66,7 @@ class TestAssembleMessages(unittest.TestCase):
         msgs = assemble_messages(**_make_args(modality="text"))
         self._assert_strict_roles(msgs)
 
+        self.assertTrue(msgs[0]["content"].startswith(_LANGUAGE_RULE))
         self.assertIn("Kamu adalah Pachinko", msgs[0]["content"])
         self.assertIn("Gaya bicara santai", msgs[0]["content"])
         self.assertIn("User: Halo", msgs[0]["content"])
@@ -138,8 +139,8 @@ class TestNormalizeMessages(unittest.TestCase):
             {"role": "system", "content": "sys0"},
             {"role": "assistant", "content": "a1"},
             {"role": "assistant", "content": "a2"},
-            {"role": "user", "content": "[Hasil Tool `t1`]:\nout1"},
-            {"role": "user", "content": "[Hasil Tool `t2`]:\nout2"},
+            {"role": "user", "content": "[Tool Result `t1`]:\nout1"},
+            {"role": "user", "content": "[Tool Result `t2`]:\nout2"},
         ]
         norm = normalize_messages(msgs)
         self.assertEqual(
@@ -147,7 +148,7 @@ class TestNormalizeMessages(unittest.TestCase):
             [
                 {"role": "system", "content": "sys0"},
                 {"role": "assistant", "content": "a1\n\na2"},
-                {"role": "user", "content": "[Hasil Tool `t1`]:\nout1\n\n[Hasil Tool `t2`]:\nout2"},
+                {"role": "user", "content": "[Tool Result `t1`]:\nout1\n\n[Tool Result `t2`]:\nout2"},
             ],
         )
 

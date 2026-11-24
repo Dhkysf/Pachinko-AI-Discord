@@ -1,8 +1,8 @@
-"""Koordinator VRAM untuk AMD Radeon RX 9070 (16 GB).
+"""VRAM Coordinator for AMD Radeon RX 9070 (16 GB).
 
-Mengatur berbagi memori GPU antara Ollama (LLM), STT/TTS lokal, dan Singing Cover (pemisahan vokal + RVC).
-Saat Singing membutuhkan VRAM besar, koordinator meminta Ollama melepas model (`keep_alive: 0`)
-dan melepas cache model audio sementara, lalu mengembalikannya setelah selesai.
+Manages GPU memory sharing between Ollama (LLM), local STT/TTS, and Singing Cover (vocal separation + RVC).
+When Singing needs heavy VRAM, the coordinator asks Ollama to unload its model (`keep_alive: 0`)
+and temporarily releases audio model caches, then restores them afterward.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class VRAMCoordinator:
         self._offload_callbacks.append((name, callback))
 
     async def offload_ollama(self) -> bool:
-        """Minta Ollama mengosongkan VRAM untuk sementara (`keep_alive: 0`)."""
+        """Ask Ollama to temporarily free VRAM (`keep_alive: 0`)."""
         if config.llm_provider != "ollama":
             return False
         try:
@@ -42,15 +42,15 @@ class VRAMCoordinator:
                     json={"model": config.ollama_model, "prompt": "", "keep_alive": 0},
                 )
                 if r.status_code == 200:
-                    log.info("VRAM RX 9070: Model Ollama '%s' berhasil di-offload sementara.", config.ollama_model)
+                    log.info("VRAM RX 9070: Ollama model '%s' temporarily offloaded.", config.ollama_model)
                     return True
         except Exception as e:
-            log.debug("Offload Ollama dilewati: %s", e)
+            log.debug("Ollama offload skipped: %s", e)
         return False
 
     @asynccontextmanager
     async def lease_heavy_gpu(self, holder: str):
-        """Pinjam VRAM eksklusif (mis. untuk render cover lagu)."""
+        """Acquire exclusive VRAM lease (e.g., for rendering a song cover)."""
         async with self._exclusive_lock:
             self._active_holder = holder
             if config.vram_offload_for_singing:
@@ -58,14 +58,14 @@ class VRAMCoordinator:
                 for name, cb in self._offload_callbacks:
                     try:
                         await cb()
-                        log.info("VRAM: '%s' di-offload untuk '%s'", name, holder)
+                        log.info("VRAM: '%s' offloaded for '%s'", name, holder)
                     except Exception:
-                        log.warning("Gagal offload '%s'", name, exc_info=True)
+                        log.warning("Failed to offload '%s'", name, exc_info=True)
             try:
                 yield
             finally:
                 self._active_holder = None
-                log.info("VRAM: lease '%s' selesai.", holder)
+                log.info("VRAM: lease '%s' released.", holder)
 
 
 vram_guard = VRAMCoordinator()

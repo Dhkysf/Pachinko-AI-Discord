@@ -1,4 +1,4 @@
-"""Daftar Tool Aman yang bisa dipanggil oleh Otak Karakter (Web Search, Baca Web, Catat Memori, Pengingat, Lagu)."""
+"""Safe Tool Registry callable by the Character Brain (Web Search, Web Read, Memory Notes, Reminders, Songs)."""
 from __future__ import annotations
 
 import asyncio
@@ -19,10 +19,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Cari informasi terbaru di internet (berita, fakta, game, lirik, cuaca, dll).",
+            "description": "Search for up-to-date information on the internet (news, facts, games, lyrics, weather, etc.).",
             "parameters": {
                 "type": "object",
-                "properties": {"query": {"type": "string", "description": "Kata kunci pencarian"}},
+                "properties": {"query": {"type": "string", "description": "Search keywords"}},
                 "required": ["query"],
             },
         },
@@ -31,12 +31,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "remember_note",
-            "description": "Simpan fakta penting tentang lawan bicara atau topik ke Buku Catatan jangka panjang.",
+            "description": "Save an important fact about the speaker or a topic to the long-term Notebook.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "fact": {"type": "string", "description": "Fakta ringkas yang perlu diingat"},
-                    "target": {"type": "string", "description": "'user' untuk lawan bicara, atau nama topik"},
+                    "fact": {"type": "string", "description": "Concise fact worth remembering"},
+                    "target": {"type": "string", "description": "'user' for the speaker, or a topic name"},
                 },
                 "required": ["fact"],
             },
@@ -46,12 +46,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "set_reminder",
-            "description": "Pasang pengingat waktu / timer untuk user di channel ini.",
+            "description": "Set a timed reminder / timer for the user in this channel.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "minutes": {"type": "number", "description": "Berapa menit dari sekarang"},
-                    "note": {"type": "string", "description": "Pesan yang harus diingatkan"},
+                    "minutes": {"type": "number", "description": "Minutes from now"},
+                    "note": {"type": "string", "description": "Message to remind about"},
                 },
                 "required": ["minutes", "note"],
             },
@@ -61,10 +61,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "queue_song",
-            "description": "Masukkan lagu dari YouTube / judul lagu ke antrean nyanyi / karaoke di voice channel.",
+            "description": "Add a YouTube song / song title to the singing / karaoke queue in the voice channel.",
             "parameters": {
                 "type": "object",
-                "properties": {"query": {"type": "string", "description": "Judul lagu atau URL YouTube"}},
+                "properties": {"query": {"type": "string", "description": "Song title or YouTube URL"}},
                 "required": ["query"],
             },
         },
@@ -109,7 +109,7 @@ class ToolBox:
             name, args, requester_id=str(user_id), requester_name=user_name
         )
         if not allowed:
-            return f"[Gate menolak: {reason}]"
+            return f"[Gate denied: {reason}]"
 
         if name == "web_search":
             return await self._web_search(str(args.get("query", "")))
@@ -119,9 +119,9 @@ class ToolBox:
             fact = str(args.get("fact", "")).strip()
             target = str(args.get("target", "user")).strip().lower()
             doc_key = f"person:{user_id}" if target in ("user", "orang", "") else f"topic:{target[:24]}"
-            await self.memory.upsert_note(doc_key, fact, evidence=f"Dari obrolan dengan {user_name}")
+            await self.memory.upsert_note(doc_key, fact, evidence=f"From chat with {user_name}")
             await self.memory.remember(f"{user_name}: {fact}", scope=f"person:{user_id}", subject_id=str(user_id), importance=0.8)
-            return f"Tersimpan di catatan ({doc_key}): {fact}"
+            return f"Saved to notebook ({doc_key}): {fact}"
         if name == "set_reminder":
             mins = max(0.2, min(1440.0, float(args.get("minutes", 5))))
             note = str(args.get("note", "Pengingat!")).strip()
@@ -129,18 +129,18 @@ class ToolBox:
             await self.memory.add_schedule(
                 kind="reminder", room_id=room_id, user_id=user_id, user_name=user_name, note=note, due_at=due
             )
-            return f"Pengingat dipasang untuk {mins:g} menit lagi: '{note}'"
+            return f"Reminder set for {mins:g} minutes from now: '{note}'"
         if name == "queue_song":
             query = str(args.get("query", "")).strip()
             if not self.song_enqueue_cb:
-                return "Modul lagu belum terhubung ke sesi voice."
+                return "Song module is not connected to a voice session."
             return await self.song_enqueue_cb(room_id, str(user_id), user_name, query)
 
-        return f"Tool '{name}' tidak dikenal."
+        return f"Unknown tool '{name}'."
 
     async def _web_search(self, query: str) -> str:
         if not query.strip():
-            return "Query kosong."
+            return "Empty query."
 
         def _search_sync() -> list[dict[str, Any]]:
             from ddgs import DDGS
@@ -150,15 +150,15 @@ class ToolBox:
         try:
             items = await asyncio.to_thread(_search_sync)
         except Exception as e:
-            return f"Pencarian gagal: {e}"
+            return f"Search failed: {e}"
         if not items:
-            return "Tidak ada hasil ditemukan."
+            return "No results found."
         lines = [f"- {it.get('title', '')}: {it.get('body', '')} ({it.get('href', '')})" for it in items]
         return data_block("web_search", "\n".join(lines), title=query, max_chars=3500)
 
     async def _web_read(self, url: str) -> str:
         if not url.startswith(("http://", "https://")):
-            return "URL tidak valid."
+            return "Invalid URL."
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
                 r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 PachinkoReader/1.0"})
@@ -167,4 +167,4 @@ class ToolBox:
                 text = re.sub(r"\s+", " ", text).strip()
                 return data_block("web_page", text, title=url[:60], max_chars=5000)
         except Exception as e:
-            return f"Gagal membaca halaman: {e}"
+            return f"Failed to read page: {e}"

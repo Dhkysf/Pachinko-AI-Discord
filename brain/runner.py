@@ -1,4 +1,4 @@
-"""SelfRunner: Otak terpadu untuk Text & Voice (dengan Streaming Kalimat Real-Time & Tool Loop)."""
+"""SelfRunner: Unified Brain for Text & Voice (with Real-Time Sentence Streaming & Tool Loop)."""
 from __future__ import annotations
 
 import asyncio
@@ -25,13 +25,13 @@ _PREFIX_STRIP_RE = re.compile(r"^\[[^\]]+\]:\s*")
 
 
 def clean_for_speech(sentence: str) -> tuple[str, list[str]]:
-    """Pisahkan teks bicara lisan dari URL (URL dikirim ke chat teks sebagai `aside`)."""
+    """Separate spoken text from URLs (URLs are sent to text chat as `aside`)."""
     urls = _URL_RE.findall(sentence)
     s = _URL_RE.sub(" tautan di chat ", sentence)
     s = _PREFIX_STRIP_RE.sub("", s)
     s = re.sub(r"```.*?```", " ", s, flags=re.S)
     s = re.sub(r"[*_`#>~]", "", s)
-    # Buang kaomoji umum agar TTS tidak mengeja kurung/simbol
+    # Strip common kaomoji so TTS does not spell out parentheses/symbols
     s = re.sub(r"\([^a-zA-Z0-9]{2,12}\)", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s, urls
@@ -134,7 +134,7 @@ class BrainRunner:
                 wake_reason=wake_reason,
             )
 
-            # Maksimal 2 putaran tool call
+            # At most 2 tool-call rounds
             resp = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=False)
             for _ in range(2):
                 if not resp.tool_calls:
@@ -145,7 +145,7 @@ class BrainRunner:
                     out = await self.tools.execute(
                         tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
                     )
-                    messages.append({"role": "user", "content": f"[Hasil Tool `{tc.name}`]:\n{out}"})
+                    messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
                 resp = await self.llm.complete_with_tools(messages, tools=None, fast_voice=False)
 
             raw = resp.text or ""
@@ -183,7 +183,7 @@ class BrainRunner:
         user_text: str,
         wake_reason: str = "voice_utterance",
     ) -> AsyncIterator[tuple[str, str, list[str]]]:
-        """Yield `(spoken_sentence, emotion, aside_urls)` seketika kalimat selesai distream oleh LLM!"""
+        """Yield `(spoken_sentence, emotion, aside_urls)` as soon as a sentence finishes streaming from the LLM."""
         async with self._lock_for(room_id):
             messages = await self._prepare_turn(
                 room_id=room_id,
@@ -195,7 +195,7 @@ class BrainRunner:
             )
             prof = self.profiles.current
 
-            # Cek cepat apakah user minta aksi eksplisit (pengingat / cari internet / lagu)
+            # Quick check if the user asked for an explicit action (reminder / web search / song)
             low = user_text.lower()
             need_tools = any(
                 kw in low
@@ -210,7 +210,7 @@ class BrainRunner:
                         out = await self.tools.execute(
                             tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
                         )
-                        messages.append({"role": "user", "content": f"[Hasil Tool `{tc.name}`]:\n{out}"})
+                        messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
 
             buffer = ""
             full_raw = ""
@@ -229,13 +229,13 @@ class BrainRunner:
                     continue
 
                 buffer += tok
-                # Cek tag <emo:...> di awal
+                # Check for leading <emo:...> tag
                 emo_m = re.search(r"<emo:([a-z_]+)>", buffer, re.I)
                 if emo_m:
                     current_emo = emo_m.group(1).lower()
                     buffer = re.sub(r"<emo:[a-z_]+>", "", buffer, flags=re.I)
 
-                # Potong per kalimat begitu ketemu titik/tanda tanya/seru diikuti spasi
+                # Split per sentence as soon as a period/question/exclamation mark followed by space appears
                 parts = _SENTENCE_SPLIT_RE.split(buffer)
                 if len(parts) > 1:
                     for ready in parts[:-1]:
@@ -245,7 +245,7 @@ class BrainRunner:
                             yield spoken, current_emo, urls
                     buffer = parts[-1]
 
-            # Sisa buffer terakhir setelah stream selesai
+            # Remaining buffer after stream ends
             clean_tail, explicit_emo, feel_raw = extract_tags(full_raw)
             emotion = await self.heart.apply_feel_block(
                 feel_raw, explicit_emo or current_emo, user_id, user_name, prof.temperament

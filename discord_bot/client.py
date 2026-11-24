@@ -1,7 +1,7 @@
 """Unified Discord Bot (Voice DAVE E2EE + Text Triage + Mind/Reminder Loop + Economy/Singing Commands).
 
-Catatan penting: JANGAN tambahkan `from __future__ import annotations` di file ini agar
-intropeksi tipe parameter slash command py-cord selalu membaca class Python asli.
+Important note: DO NOT add `from __future__ import annotations` in this file so
+py-cord slash command parameter type introspection always reads the real Python classes.
 """
 import asyncio
 import io
@@ -81,13 +81,13 @@ def build_discord_bot(
                     room_id = item["room_id"]
                     msg_txt = f"⏰ <@{uid}> (**{uname}**), pengingat dari {prof.display_name}: **{note}**"
 
-                    # Kirim ke text channel bila ketemu
+                    # Send to text channel if found
                     if room_id.isdigit():
                         ch = bot.get_channel(int(room_id))
                         if ch and hasattr(ch, "send"):
                             await ch.send(msg_txt)
 
-                    # Jika sedang di voice channel, ucapkan juga secara verbal!
+                    # If in a voice channel, speak it aloud as well!
                     for sess in sessions.values():
                         if sess.vc.is_connected() and not sess.singing_active:
                             spoken = f"Eh {uname}, waktunya pengingat kamu nih: {note}."
@@ -95,13 +95,13 @@ def build_discord_bot(
                             await sess.play_raw_pcm(pcm, spoken)
                             break
             except Exception:
-                log.exception("Error di schedule loop")
+                log.exception("Error in schedule loop")
             await asyncio.sleep(5.0)
 
     @bot.event
     async def on_ready():
         log.info(
-            "🟢 %s online sebagai %s (ID: %s) | Panel: http://%s:%d",
+            "🟢 %s online as %s (ID: %s) | Panel: http://%s:%d",
             profiles.current.display_name,
             bot.user,
             bot.user.id,
@@ -123,7 +123,7 @@ def build_discord_bot(
         uid = str(message.author.id)
         uname = message.author.display_name
 
-        # 1. Cek apakah menjawab mini-game Trivia aktif
+        # 1. Check if answering an active Trivia mini-game
         trivia_win = await economy.check_trivia_answer(room_id, uid, uname, message.content)
         if trivia_win:
             await message.reply(
@@ -133,7 +133,7 @@ def build_discord_bot(
             )
             return
 
-        # 2. Triage deterministik (mention / dipanggil nama / nyaut sesuai mode channel)
+        # 2. Deterministic triage (mention / called by name / chime in per channel mode)
         prof = profiles.current
         is_dm = isinstance(message.channel, discord.DMChannel)
         mentioned = (bot.user in message.mentions) if bot.user else False
@@ -172,7 +172,7 @@ def build_discord_bot(
             return
         humans = [m for m in sess.vc.channel.members if not m.bot]
         if not humans:
-            log.info("Voice channel kosong, keluar otomatis.")
+            log.info("Voice channel empty, leaving automatically.")
             await sessions.pop(member.guild.id).stop()
             await bus.emit("voice.left", guild_id=member.guild.id, reason="channel_empty")
 
@@ -240,7 +240,7 @@ def build_discord_bot(
             )
             await ctx.followup.send(res.text or "*(diam)*")
         except Exception as e:
-            log.exception("Error pada /say")
+            log.exception("Error in /say")
             await ctx.followup.send(f"⚠️ Gagal memproses: `{str(e)[:280]}`")
 
     @bot.slash_command(name="mode", description="Atur seberapa sering karakter nimbrung otomatis di text channel ini", guild_ids=GUILDS)

@@ -1,10 +1,10 @@
-"""Pertahanan Prompt-Injection berbasis Quoted-Data & filter output aman.
+"""Quoted-Data Prompt-Injection Defense & Safe Output Filter.
 
-Prinsip:
-- Teks eksternal (pesan user, nama profil, hasil web search, catatan) TIDAK PERNAH
-  masuk sebagai instruksi telanjang. Semuanya dinetralisir dari control token LLM
-  dan tag struktural, lalu dibungkus `<data source="...">...</data>`.
-- Output bot dibersihkan dari mention massal (@everyone/@here) dan kebocoran token/key.
+Principles:
+- External text (user messages, profile names, web search results, notes) NEVER
+  enters as bare instructions. Everything is neutralized of LLM control tokens
+  and structural tags, then wrapped in `<data source="...">...</data>`.
+- Bot output is sanitized against mass mentions (@everyone/@here) and API token/key leaks.
 """
 from __future__ import annotations
 
@@ -32,19 +32,19 @@ _SECRET_PATTERNS = [
 
 
 def neutralize(text: str, max_chars: int = 8000) -> str:
-    """Bersihkan control token & escape tag struktural agar tidak bisa memalsukan blok prompt."""
+    """Strip control tokens & escape structural tags so they cannot spoof prompt blocks."""
     if not text:
         return ""
     cleaned = _ZERO_WIDTH_BIDI.sub("", text)
     cleaned = _CONTROL_TOKENS.sub("", cleaned)
     cleaned = _STRUCTURAL_TAGS.sub(r"＜\1\2", cleaned)
     if len(cleaned) > max_chars:
-        cleaned = cleaned[:max_chars] + "… [dipotong]"
+        cleaned = cleaned[:max_chars] + "… [truncated]"
     return cleaned.strip()
 
 
 def safe_name(name: str) -> str:
-    """Nama user satu baris aman tanpa karakter pemalsu giliran dialog."""
+    """Single-line safe username without turn-spoofing characters."""
     cleaned = neutralize(name or "User", max_chars=32)
     cleaned = re.sub(r"[\r\n:\[\]<>]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
@@ -52,7 +52,7 @@ def safe_name(name: str) -> str:
 
 
 def data_block(source: str, content: str, *, title: str = "", max_chars: int = 6000) -> str:
-    """Bungkus data tak terpercaya sebagai kutipan murni."""
+    """Wrap untrusted data as a pure quotation block."""
     src_attr = safe_name(source)
     title_attr = f' title="{safe_name(title)}"' if title else ""
     body = neutralize(content, max_chars=max_chars)
@@ -60,7 +60,7 @@ def data_block(source: str, content: str, *, title: str = "", max_chars: int = 6
 
 
 def filter_outgoing(text: str) -> str:
-    """Cegah @everyone/@here dan sensor rahasia API apabila tidak sengaja bocor."""
+    """Block @everyone/@here and redact API secrets if accidentally leaked."""
     if not text:
         return ""
     out = text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")

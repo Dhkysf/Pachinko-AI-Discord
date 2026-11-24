@@ -1,4 +1,4 @@
-"""Penyimpanan tunggal SQLite (WAL mode) untuk seluruh memori, perasaan, koin, & pengaturan."""
+"""Single SQLite storage (WAL mode) for all memories, emotions, coins, & settings."""
 from __future__ import annotations
 
 import json
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS events_log (
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events_log(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_events_topic ON events_log(topic, ts DESC);
 
--- L1: Persistent Transcripts (Text & Voice menyatu per ruang/channel)
+-- L1: Persistent Transcripts (Text & Voice unified per room/channel)
 CREATE TABLE IF NOT EXISTS transcripts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id TEXT NOT NULL,
@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     role TEXT NOT NULL,            -- 'user' | 'assistant' | 'system_note'
     modality TEXT NOT NULL,        -- 'text' | 'voice'
     content TEXT NOT NULL,
-    heard_content TEXT,            -- bila dipotong (barge-in), hanya kata yang sempat terdengar
+    heard_content TEXT,            -- if interrupted (barge-in), only the words heard so far
     interrupted INTEGER DEFAULT 0,
     emotion TEXT DEFAULT 'neutral',
     ts REAL NOT NULL
@@ -100,7 +100,7 @@ CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
 END;
 
--- L3: Living Notebook (catatan hidup per orang, topik, dan refleksi diri)
+-- L3: Living Notebook (live notes per person, topic, and self-reflection)
 CREATE TABLE IF NOT EXISTS notebook (
     doc_key TEXT NOT NULL,         -- 'person:<id>' | 'topic:<slug>' | 'self'
     line_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS notebook (
 );
 CREATE INDEX IF NOT EXISTS idx_notebook_doc ON notebook(doc_key, active);
 
--- Heart: Emosi internal bot
+-- Heart: Bot internal emotions
 CREATE TABLE IF NOT EXISTS heart_self (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     emotions_json TEXT NOT NULL,
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS heart_person (
     last_seen REAL NOT NULL
 );
 
--- Jadwal & Pengingat (Reminders)
+-- Schedules & Reminders
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,            -- 'reminder' | 'self'
@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS schedules (
 );
 CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(done, due_at);
 
--- Economy: Dompet Koin & Buku Besar (Double-Entry Ledger) + Koleksi Kartu
+-- Economy: Coin Wallets & Double-Entry Ledger + Card Collection
 CREATE TABLE IF NOT EXISTS economy_wallets (
     user_id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
@@ -185,7 +185,7 @@ CREATE TABLE IF NOT EXISTS collection_cards (
     created_at REAL NOT NULL
 );
 
--- Pengaturan per-channel & key-value runtime overrides (untuk Web Panel)
+-- Per-channel settings & key-value runtime overrides (for Web Panel)
 CREATE TABLE IF NOT EXISTS channel_modes (
     channel_id TEXT PRIMARY KEY,
     mode TEXT NOT NULL,
@@ -208,7 +208,7 @@ class Store:
     @property
     def conn(self) -> aiosqlite.Connection:
         if self._conn is None:
-            raise RuntimeError("Store belum diinisialisasi (panggil await store.init() dulu)")
+            raise RuntimeError("Store is not initialized (call await store.init() first)")
         return self._conn
 
     async def init(self) -> None:

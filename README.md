@@ -1,73 +1,73 @@
 # Pachinko — Autonomous Discord Voice & Chat Companion
 
-Bot companion suara & chat Discord berbahasa Python penuh (inspired by the architecture of owenliu0924/Miyoria, no code copied)—dirancang khusus supaya mudah diedit di VS Code pada **Windows 11 + GPU AMD Radeon RX 9070 (16 GB VRAM)** dan 100% aman untuk akun Discord (memakai **Official Bot Token + DAVE E2EE**).
+A pure-Python Discord voice & chat companion bot (inspired by the architecture of owenliu0924/Miyoria, no code copied)—tailored for easy editing in VS Code on **Windows 11 + AMD Radeon RX 9070 (16 GB VRAM)** and 100% safe for Discord accounts (using **Official Bot Token + DAVE E2EE**).
 
 ---
 
-## ✨ Seluruh Subsistem yang Termasuk
+## ✨ Included Subsystems
 
 1. **Brain + 7-Block Prompt + Triage (`brain/`)**
-   - Satu pikiran menyatu untuk **Voice** & **Text Chat**.
-   - Mode otonomi per channel (`/mode`): `off`, `mention-only`, `quiet` (2x/jam), `normal` (6x/jam), `lively` (14x/jam).
-   - Pertahanan anti-*prompt-injection* berbasis kutipan `<data>` (`core/safety.py`) + **Action Gate** (`brain/gate.py`).
-   - Tools terpasang: Pencarian internet (`ddgs`), Buku Catatan, Pengingat waktu, & Antrean Lagu.
+   - One unified mind for **Voice** & **Text Chat** (replies in casual Indonesian).
+   - Per-channel autonomy modes (`/mode`): `off`, `mention-only`, `quiet` (2x/hr), `normal` (6x/hr), `lively` (14x/hr).
+   - Quoted `<data>` prompt-injection defense (`core/safety.py`) + **Action Gate** (`brain/gate.py`).
+   - Built-in tools: Web Search (`ddgs`), Living Notebook, Timed Reminders, & Song Queue.
 
 2. **Heart Engine & 9-Axis Relationship (`heart/`)**
-   - Simulasi **12 emosi** dengan peluruhan waktu (*half-life decay*), *valence*, *arousal*, & *energi*.
-   - Tag tersembunyi `<emo:...>` & `<feel>...</feel>` meng-update mood karakter dan **10 Tingkat Bond Ladder** (`-100..1000`) per member dengan redaman geometris harian.
+   - Simulates **12 emotions** with half-life decay, valence, arousal, & energy.
+   - Hidden `<emo:...>` & `<feel>...</feel>` tags update character mood and a **10-Tier Bond Ladder** (`-100..1000`) per member with daily geometric damping.
 
-3. **Memori Berlapis SQLite WAL (`core/store.py`, `memory/`)**
-   - **L0 Event Log**, **L1 Persistent Transcripts** (mencatat kalimat parsial bila terpotong *barge-in*), **L2 Hybrid Recall** (SQLite FTS5 + vektor lokal n-gram `<1ms`), dan **L3 Living Notebook** otomatis.
+3. **Layered SQLite WAL Memory (`core/store.py`, `memory/`)**
+   - **L0 Event Log**, **L1 Persistent Transcripts** (records partial spoken text when interrupted by barge-in), **L2 Hybrid Recall** (SQLite FTS5 + local n-gram vector `<1ms`), and automatic **L3 Living Notebook**.
 
 4. **Natural Voice Pipeline (`speech/`, `voice/`)**
-   - **Smart Prosodic Turn-Taking + Parked Stream**: Tidak memotong saat kamu jeda mikir di tengah kalimat, tapi responsif saat intonasi kalimat selesai.
-   - **Streaming Kalimat + `LinePrefetch`**: Kalimat ke-1 langsung diucapkan begitu keluar dari LLM *sambil* kalimat ke-2 disintesis di latar belakang.
-   - **Cached Filler** (*"Hmm?"*, *"Eh, bentar..."*) + **SelfEchoGuard** (anti-feedback bocoran speaker).
-   - **Two-Stage Smart Barge-In**: Membedakan gumaman pendek (*"hmm"*, *"iya"*, *"oke"*) vs interupsi sungguhan (bisa *ducking* 28%, *pause*, lalu *resume* tanpa putus!).
+   - **Smart Prosodic Turn-Taking + Parked Stream**: Doesn't cut you off when you pause to think mid-sentence, yet responds snappily when your intonation finishes.
+   - **Sentence Streaming + `LinePrefetch`**: Sentence 1 is spoken as soon as it leaves the LLM *while* sentence 2 is synthesized in the background.
+   - **Cached Filler** (*"Hmm?"*, *"Eh, bentar..."*) + **SelfEchoGuard** (prevents speaker-to-mic feedback).
+   - **Two-Stage Smart Barge-In**: Distinguishes short backchannels (*"hmm"*, *"iya"*, *"oke"*) from real interruptions (supports 28% volume ducking, pause, and seamless resume!).
 
 5. **Web Admin Panel (`web/`)**
-   - **Admin Studio (`http://127.0.0.1:7878`)**: Monitor emosi live, aliran event WebSocket, editor Persona & Lorebook *hot-reload*, Sandbox Playground chat, penjelajah Bond member, Notebook, & kontrol mesin AI.
+   - **Admin Studio (`http://127.0.0.1:7878`)**: Live emotion monitor, WebSocket event stream, hot-reload Persona & Lorebook editor, Sandbox Playground chat, Member Bond explorer, Notebook, & AI engine controls.
 
-6. **AI Singing / Karaoke + Koordinator VRAM RX 9070 (`sing/`, `core/vram.py`)**
-   - Request lagu dari YouTube (`/sing`), mengosongkan VRAM Ollama sementara (`keep_alive: 0`) bila mode AI Cover RVC aktif, dan memutar lagu di voice channel Discord.
+6. **AI Singing / Karaoke + RX 9070 VRAM Coordinator (`sing/`, `core/vram.py`)**
+   - Request songs from YouTube (`/sing`), temporarily unloads Ollama VRAM (`keep_alive: 0`) when RVC AI Cover mode is active, and plays music in the Discord voice channel.
 
 7. **Play & Economy (`play/`)**
-   - Dompet koin (`/daily` streak + ramalan, `/gift` penambah Bond, `/card` gacha kartu koleksi SVG, & `/trivia` mini-game).
+   - Coin wallet (`/daily` streak + fortune, `/gift` to boost Bond, `/card` SVG collectible gacha, & `/trivia` mini-game).
 
 ---
 
-## 🚀 Cara Menjalankan di Windows (AMD Radeon RX 9070 16GB)
+## 🚀 Running on Windows (AMD Radeon RX 9070 16GB)
 
-### 1. Siapkan Ollama untuk Otak LLM Lokal
-Di PowerShell Windows:
+### 1. Set Up Ollama for the Local LLM Brain
+In Windows PowerShell:
 ```powershell
 winget install Ollama.Ollama
 ollama pull qwen3:8b
 ```
-*(Dengan VRAM 16 GB di RX 9070, `qwen3:8b` hanya memakai ~5.5 GB VRAM sehingga sangat kencang dan menyisakan >10 GB VRAM longgar. Kamu juga bisa memakai `gemma3:12b`).*
+*(With 16 GB VRAM on the RX 9070, `qwen3:8b` uses only ~5.5 GB VRAM, leaving >10 GB free. You can also use `gemma3:12b`.)*
 
-### 2. Aktifkan Intent di Discord Developer Portal
-Buka https://discord.com/developers/applications → pilih aplikasi bot kamu → menu **Bot** → nyalakan **Message Content Intent** → Save Changes. *(Jika belum dinyalakan, bot tetap berjalan aman dalam mode Voice + Slash Command).*
+### 2. Enable Intent in Discord Developer Portal
+Open https://discord.com/developers/applications → select your bot application → **Bot** menu → enable **Message Content Intent** → Save Changes. *(If disabled, the bot still runs safely in Voice + Slash Command mode.)*
 
-### 3. Jalankan Setup & Start
-1. Ekstrak folder `pachinko` (mis. ke `C:\pachinko`).
-2. Klik dua kali **`setup.bat`** → isi `DISCORD_TOKEN` dan `GUILD_ID` saat Notepad terbuka → simpan.
-3. Klik dua kali **`run.bat`**.
-4. Buka **`http://127.0.0.1:7878`** di browser untuk membuka **Pachinko Studio**!
+### 3. Run Setup & Start
+1. Extract the `pachinko` folder (e.g. to `C:\pachinko`).
+2. Double-click **`setup.bat`** → fill in `DISCORD_TOKEN` and `GUILD_ID` when Notepad opens → save.
+3. Double-click **`run.bat`**.
+4. Open **`http://127.0.0.1:7878`** in your browser to open **Pachinko Studio**!
 
 ---
 
-## 🎮 Daftar Slash Command Discord (15 Command)
+## 🎮 Discord Slash Commands (15 Commands)
 
-| Command | Fungsi |
+| Command | Description |
 |---|---|
-| `/join` / `/leave` | Masuk / keluar voice channel (DAVE E2EE + Smart Turn) |
-| `/say <pesan>` | Ajak ngobrol lewat teks (sekaligus diucapkan di voice bila sedang join) |
-| `/mode <level>` | Atur keaktifan nimbrung di channel (`off`, `mention-only`, `quiet`, `normal`, `lively`) |
-| `/mood` | Lihat spektrum emosi, *valence*, & energi karakter |
-| `/bond` | Lihat tingkat kedekatan (9-Axis Bond) & catatan karakter tentangmu |
-| `/sing <lagu>` / `/skip` / `/queue` | Request lagu / karaoke YouTube, lewati lagu, lihat antrean |
-| `/daily` / `/card` / `/gift` | Klaim koin harian + ramalan, gacha kartu koleksi SVG, traktir karakter |
-| `/trivia` | Mulai mini-game kuis cepat berhadiah koin di chat |
-| `/remind <menit> <catatan>` | Pasang pengingat (diingatkan lewat chat & suara!) |
-| `/privacy` / `/reset` / `/reload` | Atur privasi sapaan otomatis, segarkan obrolan pendek, muat ulang persona |
+| `/join` / `/leave` | Join / leave voice channel (DAVE E2EE + Smart Turn) |
+| `/say <pesan>` | Chat via text (also spoken in voice if connected) |
+| `/mode <level>` | Set autonomous reply frequency in this channel (`off`, `mention-only`, `quiet`, `normal`, `lively`) |
+| `/mood` | View character's emotion spectrum, valence, & energy |
+| `/bond` | View closeness tier (9-Axis Bond) & character notes about you |
+| `/sing <lagu>` / `/skip` / `/queue` | Request a YouTube song / karaoke, skip track, view queue |
+| `/daily` / `/card` / `/gift` | Claim daily coins + fortune, draw SVG collectible card, gift coins |
+| `/trivia` | Start a quick coin-reward trivia mini-game in chat |
+| `/remind <menit> <catatan>` | Set a reminder (delivered in chat & voice!) |
+| `/privacy` / `/reset` / `/reload` | Toggle auto-greeting privacy, clear short-term chat history, reload persona |

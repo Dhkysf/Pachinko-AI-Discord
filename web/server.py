@@ -1,4 +1,4 @@
-"""FastAPI Server untuk Web Admin Panel (`http://127.0.0.1:7878`)."""
+"""FastAPI Server for Web Admin Panel (`http://127.0.0.1:7878`)."""
 from __future__ import annotations
 
 import asyncio
@@ -47,7 +47,7 @@ def create_web_app(
             return
         tok = req.headers.get("Authorization", "").removeprefix("Bearer ").strip() or req.query_params.get("token", "")
         if tok != config.panel_token:
-            raise HTTPException(status_code=401, detail="Token panel tidak cocok")
+            raise HTTPException(status_code=401, detail="Invalid panel token")
 
     @app.get("/")
     async def index():
@@ -119,7 +119,7 @@ def create_web_app(
         msg = str(body.get("message", "")).strip()
         speaker = str(body.get("speaker", "Owner")).strip() or "Owner"
         if not msg:
-            raise HTTPException(status_code=400, detail="Pesan kosong")
+            raise HTTPException(status_code=400, detail="Empty message")
         res = await brain.run_text_turn(
             room_id="panel:playground",
             user_id="owner_local",
@@ -164,8 +164,8 @@ def create_web_app(
         fact = str(body.get("fact", "")).strip()
         doc_key = str(body.get("doc_key", "self")).strip() or "self"
         if not fact:
-            raise HTTPException(status_code=400, detail="Isi catatan kosong")
-        await memory.upsert_note(doc_key, fact, evidence="Ditambahkan lewat Admin Panel")
+            raise HTTPException(status_code=400, detail="Empty note")
+        await memory.upsert_note(doc_key, fact, evidence="Added via Admin Panel")
         await memory.remember(fact, scope="global", importance=0.85)
         return {"ok": True}
 
@@ -194,7 +194,7 @@ def create_web_app(
         body = await req.json()
         q = str(body.get("query", "")).strip()
         if not q:
-            raise HTTPException(status_code=400, detail="Judul lagu kosong")
+            raise HTTPException(status_code=400, detail="Empty song query")
         msg = await singing.enqueue("panel", "owner_local", "Admin Panel", q)
         return {"ok": True, "message": msg}
 
