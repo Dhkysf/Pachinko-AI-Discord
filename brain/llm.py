@@ -20,6 +20,10 @@ from config import config
 
 log = logging.getLogger("llm")
 
+
+def _temperature_kw() -> dict[str, float]:
+    return {"temperature": config.llm_temperature} if config.llm_temperature is not None else {}
+
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _TOOL_NAMES: frozenset[str] = frozenset(t["function"]["name"] for t in TOOL_SCHEMAS)
 _TOOL_TAG_BLOCK_RE = re.compile(
@@ -405,7 +409,7 @@ class LLMClient:
             "keep_alive": config.ollama_keep_alive,
             "think": False,  # Disable long chain-of-thought for instant replies
             "options": {
-                "temperature": 0.82,
+                **_temperature_kw(),
                 "num_predict": 320 if fast_voice else 650,
             },
         }
@@ -454,7 +458,7 @@ class LLMClient:
             "keep_alive": config.ollama_keep_alive,
             "think": False,
             "options": {
-                "temperature": 0.82,
+                **_temperature_kw(),
                 "num_predict": 280 if fast_voice else 600,
             },
         }
@@ -494,7 +498,7 @@ class LLMClient:
         payload: dict[str, Any] = {
             "model": config.openai_model,
             "messages": normalize_messages(messages),
-            "temperature": 0.82,
+            **_temperature_kw(),
             "max_tokens": 320 if fast_voice else 650,
         }
         if tools:
@@ -518,7 +522,7 @@ class LLMClient:
         payload = {
             "model": config.openai_model,
             "messages": normalize_messages(messages),
-            "temperature": 0.82,
+            **_temperature_kw(),
             "max_tokens": 280 if fast_voice else 600,
             "stream": True,
         }
@@ -566,7 +570,7 @@ class LLMClient:
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction="\n\n".join(sys_chunks),
-                        temperature=0.85,
+                        **_temperature_kw(),
                         max_output_tokens=600,
                     ),
                 )

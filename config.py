@@ -1,6 +1,7 @@
 """Main Pachinko configuration (optimized for Windows + AMD RX 9070 16GB)."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,6 +9,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+log = logging.getLogger("config")
 
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = ROOT_DIR / "data"
@@ -27,6 +30,20 @@ def _int(name: str, default: int) -> int:
 def _float(name: str, default: float) -> float:
     val = os.getenv(name, "").strip()
     return float(val) if val else default
+
+
+def _opt_float(name: str, lo: float, hi: float) -> float | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        val = float(raw)
+        if lo <= val <= hi:
+            return val
+    except ValueError:
+        pass
+    log.warning("Ignoring invalid %s=%r (expected number in %s..%s); using model default.", name, raw, lo, hi)
+    return None
 
 
 def _csv(name: str, default: str = "") -> tuple[str, ...]:
@@ -57,6 +74,7 @@ class AppConfig:
     ollama_base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:8b"))
     ollama_keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "15m"))
+    llm_temperature: float | None = field(default_factory=lambda: _opt_float("LLM_TEMPERATURE", 0.0, 2.0))
 
     openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1"))
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", "lm-studio"))
