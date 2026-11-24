@@ -73,3 +73,9 @@ Open https://discord.com/developers/applications → select your bot application
 | `/trivia` | Start a quick coin-reward trivia mini-game in chat |
 | `/remind <menit> <catatan>` | Set a reminder (delivered in chat & voice!) |
 | `/privacy` / `/reset` / `/reload` | Toggle auto-greeting privacy, clear short-term chat history, reload persona |
+
+---
+
+## 🛠️ Development
+
+Double-click **`check.bat`** (or run `.venv\Scripts\python.exe -m compileall -q ...` and `.venv\Scripts\python.exe -m unittest discover tests -v`) to syntax-check all modules and run the offline unit test suite.
