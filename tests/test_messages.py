@@ -269,6 +269,34 @@ class TestAssembleMessages(unittest.TestCase):
                     msgs_hist = assemble_messages(**args_hist)
                     self.assertIn(gue_line, msgs_hist[-1]["content"])
 
+    def test_normalize_register(self) -> None:
+        from brain.prompt import normalize_register
+
+        self.assertEqual(
+            normalize_register("Gue suka gw, lo sama lu, elo dan elu, saya juga", "aku"),
+            "Aku suka aku, kamu sama kamu, kamu dan kamu, aku juga",
+        )
+        self.assertEqual(normalize_register("GUE", "aku"), "AKU")
+        self.assertEqual(normalize_register("Aku dengerin kamu, saya juga", "gue"), "Gue dengerin lo, gue juga")
+        self.assertEqual(normalize_register("lucu banget", "aku"), "lucu banget")
+        self.assertEqual(normalize_register("pake laptop lokal", "aku"), "pake laptop lokal")
+        self.assertEqual(
+            normalize_register("cek https://example.com/aku/kamu ya", "gue"),
+            "cek https://example.com/aku/kamu ya",
+        )
+        self.assertEqual(
+            normalize_register("```py\nx = 'aku'\n``` aku setuju", "gue"),
+            "```py\nx = 'aku'\n``` gue setuju",
+        )
+        self.assertEqual(
+            normalize_register("pakai `gue` aja, gue setuju", "aku"),
+            "pakai `gue` aja, aku setuju",
+        )
+        self.assertEqual(
+            normalize_register("halo @aku <@123> aku datang", "gue"),
+            "halo @aku <@123> gue datang",
+        )
+
 
 class TestNormalizeMessages(unittest.TestCase):
     def test_folds_later_system_into_next_user(self) -> None:

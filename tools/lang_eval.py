@@ -16,7 +16,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from brain.llm import LLMClient
 from brain.profile import ProfileManager
-from brain.prompt import assemble_messages
+from brain.prompt import assemble_messages, detect_register, normalize_register
 from brain.runner import _PREFIX_STRIP_RE, _assistant_tool_turn, parse_reminder_request
 from brain.tools import TOOL_SCHEMAS
 from config import DATA_DIR, config
@@ -161,9 +161,9 @@ async def _run_eval(model: str, runs: int) -> Path:
 
                 raw = resp.text or ""
                 clean, _, _ = extract_tags(raw)
-                clean = _PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip()
+                expected_reg = detect_register(prompt_text)
+                clean = normalize_register(_PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip(), expected_reg)
                 leaks = detect_leaks(clean)
-                expected_reg = "gue" if _GUE_PRONOUN_RE.search(prompt_text) else "aku"
                 wrong_pronoun = has_wrong_pronoun(clean, expected_reg)
                 results.append({
                     "prompt": prompt_text,

@@ -85,6 +85,33 @@ def detect_register(user_text: str, recent_user_texts: Iterable[str] = ()) -> st
     return "aku"
 
 
+_PROTECTED_SPAN_RE = re.compile(r"(```[\s\S]*?```|`[^`]*`|https?://\S+|<@!?\d+>|@\w+)")
+_TO_AKU_RE = re.compile(r"\b(?:gue|gw|lo|lu|elo|elu|saya)\b", re.IGNORECASE)
+_TO_AKU_MAP = {"gue": "aku", "gw": "aku", "lo": "kamu", "lu": "kamu", "elo": "kamu", "elu": "kamu", "saya": "aku"}
+_TO_GUE_RE = re.compile(r"\b(?:aku|kamu|saya)\b", re.IGNORECASE)
+_TO_GUE_MAP = {"aku": "gue", "kamu": "lo", "saya": "gue"}
+
+
+def _match_case(word: str, replacement: str) -> str:
+    if word.isupper():
+        return replacement.upper()
+    if word[0].isupper():
+        return replacement.capitalize()
+    return replacement
+
+
+def normalize_register(text: str, register: str) -> str:
+    """Swap wrong-register pronouns outside code blocks, URLs, and @mentions."""
+    if not text:
+        return text
+    pat, mapping = (_TO_GUE_RE, _TO_GUE_MAP) if register == "gue" else (_TO_AKU_RE, _TO_AKU_MAP)
+    parts = _PROTECTED_SPAN_RE.split(text)
+    for i in range(0, len(parts), 2):
+        if parts[i]:
+            parts[i] = pat.sub(lambda m: _match_case(m.group(0), mapping[m.group(0).lower()]), parts[i])
+    return "".join(parts)
+
+
 def _describe_bond(person: dict[str, Any]) -> str:
     bond = float(person.get("bond", 0.0))
     if bond < -20.0:

@@ -9,7 +9,7 @@ from typing import AsyncIterator
 
 from brain.llm import LLMClient
 from brain.profile import ProfileManager
-from brain.prompt import assemble_messages
+from brain.prompt import assemble_messages, detect_register, normalize_register
 from brain.tools import TOOL_SCHEMAS, ToolBox
 from config import config
 from core.bus import EventBus
@@ -180,7 +180,7 @@ class BrainRunner:
         user_text: str,
         modality: str,
         wake_reason: str,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], str]:
         prof = self.profiles.current
         person = await self.heart.touch_interaction(user_id, user_name, modality=modality)
         await self.memory.auto_capture_user_facts(user_id, user_name, user_text)
@@ -201,7 +201,8 @@ class BrainRunner:
             content=user_text,
         )
 
-        return assemble_messages(
+        register = detect_register(user_text, [t["content"] for t in history if t.get("role") == "user"])
+        messages = assemble_messages(
             profile=prof,
             directives=directives,
             heart_state=heart_state,
@@ -214,6 +215,7 @@ class BrainRunner:
             modality=modality,
             wake_reason=wake_reason,
         )
+        return messages, register
 
     async def run_text_turn(
         self,
@@ -225,7 +227,7 @@ class BrainRunner:
         wake_reason: str = "direct_mention",
     ) -> TurnResult:
         async with self._lock_for(room_id):
-            messages = await self._prepare_turn(
+            messages, register = await self._prepare_turn(
                 room_id=room_id,
                 user_id=user_id,
                 user_name=user_name,
@@ -266,7 +268,7 @@ class BrainRunner:
                 return TurnResult(text="", emotion="neutral", silent=True)
 
             clean, explicit_emo, feel_raw = extract_tags(raw)
-            clean = _PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip()
+            clean = normalize_register(_PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip(), register)
             prof = self.profiles.current
             emotion = await self.heart.apply_feel_block(
                 feel_raw, explicit_emo, user_id, user_name, prof.temperament
@@ -297,7 +299,7 @@ class BrainRunner:
     ) -> AsyncIterator[tuple[str, str, list[str]]]:
         """Yield `(spoken_sentence, emotion, aside_urls)` as soon as a sentence finishes streaming from the LLM."""
         async with self._lock_for(room_id):
-            messages = await self._prepare_turn(
+            messages, register = await self._prepare_turn(
                 room_id=room_id,
                 user_id=user_id,
                 user_name=user_name,
@@ -351,7 +353,7 @@ class BrainRunner:
                         prof.temperament,
                     )
                     for part in _SENTENCE_SPLIT_RE.split(clean):
-                        spoken, urls = clean_for_speech(filter_outgoing(part))
+                        spoken, urls = clean_for_speech(normalize_register(filter_outgoing(part), register))
                         if len(spoken) >= 2:
                             yield spoken, emotion, urls
                     return
@@ -383,7 +385,7 @@ class BrainRunner:
                     parts = _SENTENCE_SPLIT_RE.split(buffer)
                     if len(parts) > 1:
                         for ready in parts[:-1]:
-                            spoken, urls = clean_for_speech(filter_outgoing(ready))
+                            spoken, urls = clean_for_speech(normalize_register(filter_outgoing(ready), register))
                             if len(spoken) >= 2:
                                 yield spoken, current_emo, urls
                         buffer = parts[-1]
@@ -405,6 +407,6 @@ class BrainRunner:
             )
 
             tail_rem, _, _ = extract_tags(buffer)
-            spoken_tail, urls_tail = clean_for_speech(filter_outgoing(tail_rem))
+            spoken_tail, urls_tail = clean_for_speech(normalize_register(filter_outgoing(tail_rem), register))
             if len(spoken_tail) >= 2:
                 yield spoken_tail, emotion, urls_tail
