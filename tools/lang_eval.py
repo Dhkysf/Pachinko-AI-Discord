@@ -34,6 +34,8 @@ TEST_MESSAGES: list[tuple[str, bool]] = [
     ("ceritain dikit dong soal diri kamu", False),
     ("ingatkan aku minum 1 menit lagi", True),
     ("jelasin singkat apa itu RAM", False),
+    ("aku mau cerita dong, kamu mau dengerin gak?", False),
+    ("gue mau cerita dong, lo mau dengerin gak?", False),
 ]
 
 _TAG_LEAK_RE = re.compile(
@@ -46,6 +48,17 @@ _JSON_LEAK_RE = re.compile(
 )
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
 _WORD_RE = re.compile(r"[a-z']+")
+_GUE_PRONOUN_RE = re.compile(r"\b(?:gue|gw|lo|lu|elo|elu)\b", re.IGNORECASE)
+_AKU_PRONOUN_RE = re.compile(r"\b(?:aku|kamu)\b", re.IGNORECASE)
+_SAYA_PRONOUN_RE = re.compile(r"\bsaya\b", re.IGNORECASE)
+
+
+def has_wrong_pronoun(reply: str, expected_register: str) -> bool:
+    if _SAYA_PRONOUN_RE.search(reply):
+        return True
+    if expected_register == "gue":
+        return bool(_AKU_PRONOUN_RE.search(reply))
+    return bool(_GUE_PRONOUN_RE.search(reply))
 
 _EN_WORDS = frozenset({
     "the", "is", "are", "was", "were", "you", "your", "i'm", "don't", "can't",
@@ -150,6 +163,8 @@ async def _run_eval(model: str, runs: int) -> Path:
                 clean, _, _ = extract_tags(raw)
                 clean = _PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip()
                 leaks = detect_leaks(clean)
+                expected_reg = "gue" if _GUE_PRONOUN_RE.search(prompt_text) else "aku"
+                wrong_pronoun = has_wrong_pronoun(clean, expected_reg)
                 results.append({
                     "prompt": prompt_text,
                     "expects_tool": expects_tool,
@@ -158,6 +173,7 @@ async def _run_eval(model: str, runs: int) -> Path:
                     "length": len(clean),
                     "tools_called": tools_called,
                     "time_s": elapsed,
+                    "wrong_pronoun": wrong_pronoun,
                     **leaks,
                 })
     finally:
@@ -167,6 +183,7 @@ async def _run_eval(model: str, runs: int) -> Path:
     tag_leaks = sum(1 for r in results if r["tag_leak"])
     json_leaks = sum(1 for r in results if r["json_leak"])
     en_leaks = sum(1 for r in results if r["english_leak"])
+    wrong_pronouns = sum(1 for r in results if r["wrong_pronoun"])
     avg_len = sum(r["length"] for r in results) / total if total else 0.0
     avg_time = sum(r["time_s"] for r in results) / total if total else 0.0
     tool_expected = [r for r in results if r["expects_tool"]]
@@ -193,6 +210,7 @@ async def _run_eval(model: str, runs: int) -> Path:
         f"| JSON leaks | {json_leaks}/{total} |",
         f"| Total tag/JSON leaks | {tag_leaks + json_leaks}/{total} |",
         f"| English sentence leaks | {en_leaks}/{total} |",
+        f"| Wrong pronoun | {wrong_pronouns}/{total} |",
         f"| Average length (chars) | {avg_len:.1f} |",
         f"| Tool call OK (`set_reminder`) | {tool_ok}/{len(tool_expected)} |",
         f"| Unexpected tool calls | {unexpected_tools}/{total - len(tool_expected)} |",
@@ -206,7 +224,7 @@ async def _run_eval(model: str, runs: int) -> Path:
         lines.extend([
             f"### Run {r['run']} — `{r['prompt']}`",
             f"- **Length:** {r['length']} chars | **Time:** {r['time_s']:.2f}s | **Tools:** {tools_str}",
-            f"- **Leaks:** tag={r['tag_leak']}, json={r['json_leak']}, english={r['english_leak']}",
+            f"- **Leaks:** tag={r['tag_leak']}, json={r['json_leak']}, english={r['english_leak']}, wrong_pronoun={r['wrong_pronoun']}",
             "",
             f"> {r['reply'].replace(chr(10), chr(10) + '> ') if r['reply'] else '(empty)'}",
             "",
@@ -216,7 +234,7 @@ async def _run_eval(model: str, runs: int) -> Path:
     print(f"Report written: {out_path}")
     print(
         f"Summary [{model}]: tag_leaks={tag_leaks}/{total}, json_leaks={json_leaks}/{total}, "
-        f"english_leaks={en_leaks}/{total}, avg_len={avg_len:.1f}, "
+        f"english_leaks={en_leaks}/{total}, wrong_pronoun={wrong_pronouns}/{total}, avg_len={avg_len:.1f}, "
         f"tool_ok={tool_ok}/{len(tool_expected)}, avg_time={avg_time:.2f}s"
     )
     return out_path

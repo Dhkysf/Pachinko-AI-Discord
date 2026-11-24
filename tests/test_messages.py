@@ -109,7 +109,9 @@ class TestAssembleMessages(unittest.TestCase):
         self.assertIn("Halo Pachinko, lagi minum kopi ya?", content)
         self.assertLess(content.index("<style_note>"), content.index("Halo Pachinko, lagi minum kopi ya?"))
         self.assertIn("1-2 kalimat, nyambung sama pesan terakhir. Kalau nggak ngerti slang-nya, tanya balik.", content)
-        self.assertTrue(content.endswith("Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu."))
+        self.assertTrue(
+            content.endswith("Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu. Pakai aku/kamu, jangan gue/lo/saya.")
+        )
 
     def test_compact_prompt_default_and_structure(self) -> None:
         env = dict(os.environ)
@@ -135,7 +137,9 @@ class TestAssembleMessages(unittest.TestCase):
             msgs[-1]["content"],
         )
         self.assertTrue(
-            msgs[-1]["content"].endswith("Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu.")
+            msgs[-1]["content"].endswith(
+                "Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu. Pakai aku/kamu, jangan gue/lo/saya."
+            )
         )
 
     def test_legacy_prompt_byte_for_byte_when_compact_false(self) -> None:
@@ -194,7 +198,8 @@ class TestAssembleMessages(unittest.TestCase):
                     "[Budi]:\n"
                     '<data source="chat Budi" title="text">\n'
                     "Halo Pachinko, lagi minum kopi ya?\n"
-                    "</data>"
+                    "</data>\n\n"
+                    "Pakai aku/kamu, jangan gue/lo/saya."
                 ),
             },
         ]
@@ -230,6 +235,39 @@ class TestAssembleMessages(unittest.TestCase):
         for content in assistant_msgs:
             self.assertNotIn("I remember the speaker context and notes above.", content)
             self.assertNotIn(" [interrupted because the speaker cut in]", content)
+
+    def test_detect_register(self) -> None:
+        from brain.prompt import detect_register
+
+        self.assertEqual(detect_register("aku mau cerita", []), "aku")
+        self.assertEqual(detect_register("gue mau cerita", []), "gue")
+        self.assertEqual(detect_register("lu lagi apa", []), "gue")
+        self.assertEqual(detect_register("lucu banget", []), "aku")
+        self.assertEqual(detect_register("pake laptop lokal", []), "aku")
+        self.assertEqual(detect_register("", ["gw lagi capek"]), "gue")
+        self.assertEqual(detect_register("", ["gw lama", "satu", "dua", "tiga"]), "aku")
+        self.assertEqual(detect_register("aku mau cerita", ["gw lagi capek"]), "aku")
+
+    def test_prompt_includes_matching_register_line(self) -> None:
+        aku_line = "Pakai aku/kamu, jangan gue/lo/saya."
+        gue_line = "Pakai gue/lo, jangan aku/kamu/saya."
+
+        for compact in (True, False):
+            for modality in ("text", "voice"):
+                with patch("brain.prompt.config.llm_compact_prompt", compact):
+                    msgs_aku = assemble_messages(**_make_args(modality=modality, user_text="aku mau cerita"))
+                    self.assertIn(aku_line, msgs_aku[-1]["content"])
+
+                    msgs_gue = assemble_messages(**_make_args(modality=modality, user_text="gue mau cerita"))
+                    self.assertIn(gue_line, msgs_gue[-1]["content"])
+
+                    args_hist = _make_args(modality=modality, user_text="")
+                    args_hist["history"] = [
+                        {"role": "user", "speaker_name": "Budi", "content": "gw lagi capek"},
+                        {"role": "assistant", "content": "Kenapa?", "interrupted": False},
+                    ]
+                    msgs_hist = assemble_messages(**args_hist)
+                    self.assertIn(gue_line, msgs_hist[-1]["content"])
 
 
 class TestNormalizeMessages(unittest.TestCase):

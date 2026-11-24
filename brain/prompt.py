@@ -7,6 +7,8 @@ current emotion, speaker bond score, recalled memories, and Lorebook hits.
 from __future__ import annotations
 
 import datetime as dt
+import re
+from collections.abc import Iterable
 from typing import Any
 
 from brain.profile import CharacterProfile
@@ -57,6 +59,30 @@ _MOOD_LABELS = {
     "surprised": "lagi kaget",
     "thinking": "lagi penasaran",
 }
+
+_GUE_REGISTER_RE = re.compile(r"\b(?:gue|gw|lo|lu|elo|elu)\b", re.IGNORECASE)
+_AKU_REGISTER_RE = re.compile(r"\b(?:aku|kamu)\b", re.IGNORECASE)
+_REGISTER_LINES = {
+    "aku": "Pakai aku/kamu, jangan gue/lo/saya.",
+    "gue": "Pakai gue/lo, jangan aku/kamu/saya.",
+}
+
+
+def detect_register(user_text: str, recent_user_texts: Iterable[str] = ()) -> str:
+    """Return 'gue' if user uses gue/lo register, otherwise 'aku'."""
+    if user_text:
+        if _GUE_REGISTER_RE.search(user_text):
+            return "gue"
+        if _AKU_REGISTER_RE.search(user_text):
+            return "aku"
+    for msg in reversed(list(recent_user_texts)[-3:]):
+        if not msg:
+            continue
+        if _GUE_REGISTER_RE.search(msg):
+            return "gue"
+        if _AKU_REGISTER_RE.search(msg):
+            return "aku"
+    return "aku"
 
 
 def _describe_bond(person: dict[str, Any]) -> str:
@@ -181,7 +207,9 @@ def _assemble_legacy_messages(
     tail_ctx = "\n\n".join(b for b in (now_block, style_block, turn_block) if b)
     safe_user = data_block(f"chat:{sname}", user_text, title=modality)
     user_msg = f"[{sname}]:\n{safe_user}"
-    final_user = f"{tail_ctx}\n\n{user_msg}" if tail_ctx else user_msg
+    recent_user_texts = [t["content"] for t in history if t.get("role") == "user"]
+    reg_line = _REGISTER_LINES[detect_register(user_text, recent_user_texts)]
+    final_user = f"{tail_ctx}\n\n{user_msg}\n\n{reg_line}" if tail_ctx else f"{user_msg}\n\n{reg_line}"
     messages.append({"role": "user", "content": final_user})
     return messages
 
@@ -293,10 +321,12 @@ def assemble_messages(
     safe_user = data_block(f"chat:{sname}", user_text, title=modality)
     user_msg = f"[{sname}]:\n{safe_user}"
     sent_range = "1-2 kalimat" if modality == "voice" else "1-3 kalimat"
+    recent_user_texts = [t["content"] for t in history if t.get("role") == "user"]
+    reg_line = _REGISTER_LINES[detect_register(user_text, recent_user_texts)]
     reminder = (
         f"Jawab sebagai {profile.display_name} pakai bahasa Indonesia santai, {sent_range}, "
         "nyambung sama pesan terakhir. Kalau nggak ngerti slang-nya, tanya balik. "
-        "Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu."
+        f"Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu. {reg_line}"
     )
     final_user = f"{tail_ctx}\n\n{user_msg}\n\n{reminder}" if tail_ctx else f"{user_msg}\n\n{reminder}"
     messages.append({"role": "user", "content": final_user})

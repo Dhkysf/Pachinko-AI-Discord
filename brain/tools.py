@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 from typing import Any, Callable, Awaitable
 
@@ -31,11 +32,19 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "remember_note",
-            "description": "Save an important fact about the speaker or a topic to the long-term Notebook.",
+            "description": (
+                "Save a lasting fact that the user stated about themselves or explicitly asked to remember "
+                "(likes, dislikes, name/nickname, school/work, important plans). Never save that someone asked "
+                "a question, said hello, or sent a one-word message. Write the fact in short Indonesian, "
+                "third person, e.g. 'Suka kopi susu gula aren'."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "fact": {"type": "string", "description": "Concise fact worth remembering"},
+                    "fact": {
+                        "type": "string",
+                        "description": "Short lasting fact in Indonesian, third person, e.g. 'Suka kopi susu gula aren'",
+                    },
                     "target": {"type": "string", "description": "'user' for the speaker, or a topic name"},
                 },
                 "required": ["fact"],
@@ -72,6 +81,25 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 _ALLOWED_TOOLS: frozenset[str] = frozenset(t["function"]["name"] for t in TOOL_SCHEMAS)
+
+_NOTE_EVENT_LOG_RE = re.compile(
+    r"\b(?:asked|said|bertanya|nanya|bilang|menyapa|baru\s+kenal)\b",
+    re.IGNORECASE,
+)
+_NOTE_SCORE_RE = re.compile(
+    r"\b(?:bond|trust|warmth|score)\s*[:=]?\s*[+-]?\d+(?:[.,]\d+)?(?:/\d+)?",
+    re.IGNORECASE,
+)
+
+
+def _reject_note_reason(fact: str) -> str | None:
+    if len(fact) < 8:
+        return "too short"
+    if _NOTE_EVENT_LOG_RE.search(fact):
+        return "event log, not a lasting fact"
+    if _NOTE_SCORE_RE.search(fact):
+        return "contains relationship/score numbers"
+    return None
 
 
 class ToolBox:
@@ -118,6 +146,10 @@ class ToolBox:
             return await self._web_search(str(args.get("query", "")))
         if name == "remember_note":
             fact = str(args.get("fact", "")).strip()
+            reject = _reject_note_reason(fact)
+            if reject:
+                log.info("Rejected remember_note (%s) for user=%s: %r", reject, user_name, fact)
+                return f"Skipped note: {reject}."
             target = str(args.get("target", "user")).strip().lower()
             doc_key = f"person:{user_id}" if target in ("user", "orang", "") else f"topic:{target[:24]}"
             await self.memory.upsert_note(doc_key, fact, evidence=f"From chat with {user_name}")

@@ -335,5 +335,46 @@ class TestToolBoxAllowlist(unittest.IsolatedAsyncioTestCase):
         gate.check.assert_not_called()
 
 
+class TestRememberNoteGuard(unittest.IsolatedAsyncioTestCase):
+    async def test_rejects_event_logs_scores_and_short_notes(self) -> None:
+        from brain.tools import ToolBox
+
+        memory = types.SimpleNamespace(
+            upsert_note=AsyncMock(),
+            remember=AsyncMock(),
+        )
+        gate = types.SimpleNamespace(check=AsyncMock(return_value=(True, "ok")))
+        box = ToolBox(memory=memory, gate=gate)  # type: ignore[arg-type]
+
+        rejected = (
+            "Glizzy Glazer asked about my current drink",
+            'Narenee said "patata"',
+            "baru kenal. Bond 16.2/1000",
+            "ok",
+        )
+        for fact in rejected:
+            with self.assertLogs("brain.tools", level="INFO"):
+                out = await box.execute("remember_note", {"fact": fact}, room_id="r1", user_id="u1", user_name="Budi")
+            self.assertTrue(out.startswith("Skipped note:"), f"Expected Skipped note for {fact!r}, got {out!r}")
+        memory.upsert_note.assert_not_called()
+        memory.remember.assert_not_called()
+
+    async def test_accepts_valid_indonesian_facts(self) -> None:
+        from brain.tools import ToolBox
+
+        memory = types.SimpleNamespace(
+            upsert_note=AsyncMock(return_value=1),
+            remember=AsyncMock(return_value=1),
+        )
+        gate = types.SimpleNamespace(check=AsyncMock(return_value=(True, "ok")))
+        box = ToolBox(memory=memory, gate=gate)  # type: ignore[arg-type]
+
+        for fact in ("Suka kopi susu gula aren", "Kuliah di UBSI jurusan informatika"):
+            out = await box.execute("remember_note", {"fact": fact}, room_id="r1", user_id="u1", user_name="Budi")
+            self.assertTrue(out.startswith("Saved to notebook"), f"Expected Saved for {fact!r}, got {out!r}")
+        self.assertEqual(memory.upsert_note.await_count, 2)
+        self.assertEqual(memory.remember.await_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
