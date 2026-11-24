@@ -229,7 +229,6 @@ class BrainRunner:
             full_raw = ""
             current_emo = self.heart.dominant_emotion(prof.temperament)
             in_feel = False
-            emitted_sentences: list[str] = []
 
             try:
                 async for tok in self.llm.stream_text(messages, fast_voice=True):
@@ -255,7 +254,6 @@ class BrainRunner:
                         for ready in parts[:-1]:
                             spoken, urls = clean_for_speech(filter_outgoing(ready))
                             if len(spoken) >= 2:
-                                emitted_sentences.append(spoken)
                                 yield spoken, current_emo, urls
                         buffer = parts[-1]
             except Exception:
@@ -271,18 +269,4 @@ class BrainRunner:
             tail_rem, _, _ = extract_tags(buffer)
             spoken_tail, urls_tail = clean_for_speech(filter_outgoing(tail_rem))
             if len(spoken_tail) >= 2:
-                emitted_sentences.append(spoken_tail)
                 yield spoken_tail, emotion, urls_tail
-
-            if emitted_sentences:
-                joined = " ".join(emitted_sentences)
-                tid = await self.memory.add_transcript(
-                    room_id=room_id,
-                    speaker_id="self",
-                    speaker_name=prof.display_name,
-                    role="assistant",
-                    modality="voice",
-                    content=joined,
-                    emotion=emotion,
-                )
-                self._last_voice_transcript_id = tid

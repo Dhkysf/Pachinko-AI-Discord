@@ -56,11 +56,25 @@ class MemoryManager:
         modality: str,
         content: str,
         emotion: str = "neutral",
+        interrupted: int | bool = 0,
+        heard_content: str | None = None,
     ) -> int:
         cur = await self.store.conn.execute(
-            "INSERT INTO transcripts (room_id, speaker_id, speaker_name, role, modality, content, emotion, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (str(room_id), str(speaker_id), speaker_name, role, modality, content, emotion, time.time()),
+            "INSERT INTO transcripts "
+            "(room_id, speaker_id, speaker_name, role, modality, content, heard_content, interrupted, emotion, ts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(room_id),
+                str(speaker_id),
+                speaker_name,
+                role,
+                modality,
+                content,
+                heard_content,
+                1 if interrupted else 0,
+                emotion,
+                time.time(),
+            ),
         )
         await self.store.conn.commit()
         row_id = int(cur.lastrowid)

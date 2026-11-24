@@ -57,7 +57,7 @@ class _SpeakerTrack:
     voiced_ms: int = 0
     last_voice_ts: float = 0.0
     speaking: bool = False
-    speech_notified: bool = False
+    last_notify_ms: int = 0
 
 
 UtteranceHandler = Callable[[object, bytes], Awaitable[None]]
@@ -124,8 +124,8 @@ class SmartTurnSink(Sink):
                 tr.last_voice_ts = now
                 tr.voiced_ms += frame_ms
                 tr.speaking = True
-                if tr.voiced_ms >= 160 and (not tr.speech_notified or tr.voiced_ms % 600 < 30):
-                    tr.speech_notified = True
+                if tr.voiced_ms - tr.last_notify_ms >= 200:
+                    tr.last_notify_ms = tr.voiced_ms
                     notify_ms = tr.voiced_ms
             elif not tr.speaking and len(tr.buf) > self.preroll_bytes:
                 del tr.buf[: len(tr.buf) - self.preroll_bytes]
@@ -161,7 +161,7 @@ class SmartTurnSink(Sink):
         tr.buf.clear()
         tr.voiced_ms = 0
         tr.speaking = False
-        tr.speech_notified = False
+        tr.last_notify_ms = 0
         if voiced_ms < self.min_speech_ms:
             return
         asyncio.run_coroutine_threadsafe(self.on_utterance(tr.user, pcm), self.loop)

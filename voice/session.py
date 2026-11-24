@@ -135,6 +135,7 @@ class NaturalVoiceSession:
         self._utterance_q: asyncio.Queue[tuple[discord.abc.User, bytes]] = asyncio.Queue()
         self._current_source: ExpressivePCMSource | None = None
         self._active_turn_task: asyncio.Task | None = None
+        self._unduck_handle: asyncio.TimerHandle | None = None
         self._spoken_so_far: list[str] = []
         self._barge_triggered = asyncio.Event()
 
@@ -153,9 +154,16 @@ class NaturalVoiceSession:
         self.vc.start_recording(self.sink)
 
     async def stop(self) -> None:
+        if self._unduck_handle is not None:
+            self._unduck_handle.cancel()
+            self._unduck_handle = None
+        tasks: list[asyncio.Task] = []
         self._worker_task.cancel()
+        tasks.append(self._worker_task)
         if self._active_turn_task and not self._active_turn_task.done():
             self._active_turn_task.cancel()
+            tasks.append(self._active_turn_task)
+        await asyncio.gather(*tasks, return_exceptions=True)
         try:
             if self.vc.is_recording():
                 self.vc.stop_recording()
@@ -178,6 +186,9 @@ class NaturalVoiceSession:
             # Someone else talking in the background: lower volume (ducking) without cutting off
             if voiced_ms >= 240:
                 src.set_duck(True)
+                if self._unduck_handle is not None:
+                    self._unduck_handle.cancel()
+                self._unduck_handle = self.loop.call_later(1.5, self._auto_unduck, src)
             return
 
         # Primary speaker is talking: pause briefly at 320ms, hard-cut if long speech >= 2200ms
@@ -187,6 +198,11 @@ class NaturalVoiceSession:
             src.pause()
             # If no meaningful transcript arrives within 2.2s (e.g. a cough), auto-resume
             self.loop.call_later(2.2, self._auto_resume_if_still_paused, src)
+
+    def _auto_unduck(self, src: ExpressivePCMSource) -> None:
+        self._unduck_handle = None
+        if self._current_source is src and not src.stopped:
+            src.set_duck(False)
 
     def _auto_resume_if_still_paused(self, src: ExpressivePCMSource) -> None:
         if self._current_source is src and src.paused and not src.stopped:
@@ -252,24 +268,22 @@ class NaturalVoiceSession:
             return
 
         # Stage 2 Smart Barge-In: check if the utterance was just a backchannel ("hmm", "iya", "oke")
-        if src and self.vc.is_playing():
+        has_active_turn = self._active_turn_task is not None and not self._active_turn_task.done()
+        if (src and self.vc.is_playing()) or has_active_turn:
             is_focus = self.focus_user_id is None or user.id == self.focus_user_id
             if self._is_backchannel(text) and not addressed:
                 log.info("[%s] backchannel '%s' -> resume speaking without cutting off.", speaker_name, text)
-                src.resume()
-                src.set_duck(False)
+                if src:
+                    src.resume()
+                    src.set_duck(False)
                 return
             if not is_focus and not addressed:
-                src.set_duck(False)
+                if src:
+                    src.set_duck(False)
                 return
             # Genuine interruption!
             self._abort_current_speech(reason=f"interrupted_by:{speaker_name}")
-            if self._active_turn_task and not self._active_turn_task.done():
-                self._active_turn_task.cancel()
-                try:
-                    await self._active_turn_task
-                except asyncio.CancelledError:
-                    pass
+            await self._cancel_active_turn()
 
         log.info("🎙️ [%s] (STT %.2fs): %s", speaker_name, stt_s, text)
         await self.bus.emit("voice.heard", speaker=speaker_name, text=text, stt_sec=round(stt_s, 2))
@@ -278,13 +292,53 @@ class NaturalVoiceSession:
         self._barge_triggered.clear()
         self._spoken_so_far.clear()
 
-        self._active_turn_task = asyncio.create_task(
+        task = asyncio.create_task(
             self._speak_streaming_turn(str(user.id), speaker_name, text)
         )
-        try:
-            await self._active_turn_task
-        except asyncio.CancelledError:
-            pass
+        task.add_done_callback(self._on_turn_done)
+        self._active_turn_task = task
+
+    def _on_turn_done(self, task: asyncio.Task) -> None:
+        if self._active_turn_task is task:
+            self._active_turn_task = None
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            log.error("Voice turn task failed", exc_info=exc)
+
+    async def _cancel_active_turn(self) -> None:
+        task = self._active_turn_task
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._active_turn_task is task:
+            self._active_turn_task = None
+
+    async def _save_voice_reply(
+        self,
+        content: str,
+        emotion: str,
+        *,
+        interrupted: bool = False,
+        heard_content: str | None = None,
+    ) -> None:
+        if not content:
+            return
+        await self.memory.add_transcript(
+            room_id=self.room_id,
+            speaker_id="self",
+            speaker_name=self.profiles.current.display_name,
+            role="assistant",
+            modality="voice",
+            content=content,
+            emotion=emotion,
+            interrupted=1 if interrupted else 0,
+            heard_content=heard_content if interrupted else None,
+        )
 
     async def _speak_streaming_turn(self, user_id: str, speaker_name: str, user_text: str) -> None:
         prof = self.profiles.current
@@ -305,8 +359,13 @@ class NaturalVoiceSession:
         filler_task = asyncio.create_task(_filler_watch())
         aside_urls_all: list[str] = []
         full_sentences: list[str] = []
+        last_emo = "neutral"
+        all_synth_tasks: list[asyncio.Task[bytes]] = []
+        current_synth: asyncio.Task[bytes] | None = None
+        was_cancelled = False
 
         async def _producer() -> None:
+            nonlocal last_emo
             try:
                 async for sentence, emo, urls in self.brain.stream_voice_turn(
                     room_id=self.room_id,
@@ -316,15 +375,33 @@ class NaturalVoiceSession:
                 ):
                     if self._barge_triggered.is_set():
                         break
+                    last_emo = emo
                     aside_urls_all.extend(urls)
                     full_sentences.append(sentence)
                     # Start TTS synthesis in background immediately (LinePrefetch)!
                     synth_task = asyncio.create_task(self.tts.synthesize_pcm(sentence, emotion=emo))
+                    all_synth_tasks.append(synth_task)
                     await audio_q.put((sentence, emo, synth_task))
             finally:
                 await audio_q.put(None)
 
         prod_task = asyncio.create_task(_producer())
+
+        def _cancel_pending_synths() -> None:
+            if current_synth is not None and not current_synth.done():
+                current_synth.cancel()
+            while not audio_q.empty():
+                try:
+                    q_item = audio_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if q_item is not None and not q_item[2].done():
+                    q_item[2].cancel()
+            for t in all_synth_tasks:
+                if not t.done():
+                    t.cancel()
+                elif not t.cancelled():
+                    t.exception()
 
         try:
             while not self._barge_triggered.is_set():
@@ -332,7 +409,9 @@ class NaturalVoiceSession:
                 if item is None:
                     break
                 sentence, emo, synth_task = item
+                current_synth = synth_task
                 pcm = await synth_task
+                current_synth = None
                 first_sentence_ready.set()
                 if not pcm or self._barge_triggered.is_set():
                     break
@@ -343,23 +422,43 @@ class NaturalVoiceSession:
                     self._spoken_so_far.append(sentence)
                 else:
                     break
+        except asyncio.CancelledError:
+            was_cancelled = True
         finally:
             filler_task.cancel()
             if not prod_task.done():
                 prod_task.cancel()
+            _cancel_pending_synths()
 
-        # If interrupted mid-way, update transcript with only the words actually heard
-        if self._barge_triggered.is_set() and getattr(self.brain, "_last_voice_transcript_id", None):
-            heard = " ".join(self._spoken_so_far).strip()
-            await self.memory.mark_interrupted(self.brain._last_voice_transcript_id, heard)
+        if was_cancelled and not self._barge_triggered.is_set():
+            raise asyncio.CancelledError
 
-        if full_sentences and config.log_voice_to_text and self.text_channel:
-            shown = " ".join(self._spoken_so_far) if self._barge_triggered.is_set() else " ".join(full_sentences)
-            cut_tag = " *(dipotong)*" if self._barge_triggered.is_set() else ""
-            msg = f"🎙️ **{speaker_name}:** {user_text}\n🤖 **{prof.display_name}:** {shown}{cut_tag}"
-            if aside_urls_all:
-                msg += "\n🔗 " + " ".join(aside_urls_all)
-            asyncio.create_task(self._safe_send(msg))
+        results = await asyncio.gather(filler_task, prod_task, return_exceptions=True)
+        if len(results) > 1 and isinstance(results[1], Exception) and not isinstance(results[1], asyncio.CancelledError):
+            log.error("Voice producer failed", exc_info=results[1])
+        _cancel_pending_synths()
+
+        interrupted = self._barge_triggered.is_set()
+        if full_sentences:
+            full_text = " ".join(full_sentences).strip()
+            heard = " ".join(self._spoken_so_far).strip() if interrupted else None
+            await self._save_voice_reply(
+                full_text,
+                last_emo,
+                interrupted=interrupted,
+                heard_content=heard,
+            )
+
+            if config.log_voice_to_text and self.text_channel:
+                shown = " ".join(self._spoken_so_far) if interrupted else full_text
+                cut_tag = " *(dipotong)*" if interrupted else ""
+                msg = f"🎙️ **{speaker_name}:** {user_text}\n🤖 **{prof.display_name}:** {shown}{cut_tag}"
+                if aside_urls_all:
+                    msg += "\n🔗 " + " ".join(aside_urls_all)
+                asyncio.create_task(self._safe_send(msg))
+
+        if was_cancelled:
+            raise asyncio.CancelledError
 
     async def play_raw_pcm(self, pcm: bytes, text: str, *, is_filler: bool = False) -> bool:
         if not self.vc.is_connected() or not pcm:
@@ -374,15 +473,25 @@ class NaturalVoiceSession:
         if not is_filler:
             self._current_source = src
         done = asyncio.Event()
-        self.vc.play(src, after=lambda _e: self.loop.call_soon_threadsafe(done.set))
-        await done.wait()
-        if self._current_source is src:
-            self._current_source = None
+        try:
+            self.vc.play(src, after=lambda _e: self.loop.call_soon_threadsafe(done.set))
+            await done.wait()
+        except asyncio.CancelledError:
+            src.stop_now()
+            if self.vc.is_playing():
+                self.vc.stop()
+            raise
+        finally:
+            if self._current_source is src:
+                self._current_source = None
         return not src.stopped
 
     async def speak_direct_text(self, speaker_name: str, user_id: str, prompt_text: str) -> str:
         """Used by `/say`: full response + played to the voice channel."""
+        self._barge_triggered.clear()
+        self._spoken_so_far.clear()
         collected: list[str] = []
+        last_emo = "neutral"
         async for sentence, emo, _ in self.brain.stream_voice_turn(
             room_id=self.room_id,
             user_id=user_id,
@@ -391,10 +500,25 @@ class NaturalVoiceSession:
             wake_reason="slash_say",
         ):
             collected.append(sentence)
+            last_emo = emo
+            if self._barge_triggered.is_set():
+                continue
             pcm = await self.tts.synthesize_pcm(sentence, emotion=emo)
             self.stt.echo_guard.record_bot_speech(sentence)
-            await self.play_raw_pcm(pcm, sentence)
-        return " ".join(collected)
+            completed = await self.play_raw_pcm(pcm, sentence)
+            if completed:
+                self._spoken_so_far.append(sentence)
+
+        full_text = " ".join(collected).strip()
+        if full_text:
+            interrupted = self._barge_triggered.is_set()
+            await self._save_voice_reply(
+                full_text,
+                last_emo,
+                interrupted=interrupted,
+                heard_content=" ".join(self._spoken_so_far).strip() if interrupted else None,
+            )
+        return full_text
 
     async def _safe_send(self, content: str) -> None:
         try:
