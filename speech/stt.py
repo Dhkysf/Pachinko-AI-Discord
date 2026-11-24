@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import logging
 import re
 import time
 import wave
 from collections import deque
+from typing import Any
 
 import numpy as np
 
@@ -88,8 +90,31 @@ class STTEngine:
     def __init__(self) -> None:
         self._whisper_model = None
         self._lock = asyncio.Lock()
+        self._groq_client: Any = None
+        self._groq_api_key: str = ""
         self.echo_guard = SelfEchoGuard()
         vram_guard.register_offload("faster-whisper", self.offload)
+
+    def _get_groq_client(self) -> Any:
+        if not config.groq_api_key:
+            return None
+        if self._groq_client is None or self._groq_api_key != config.groq_api_key:
+            from groq import AsyncGroq
+
+            self._groq_client = AsyncGroq(api_key=config.groq_api_key)
+            self._groq_api_key = config.groq_api_key
+        return self._groq_client
+
+    async def close(self) -> None:
+        if self._groq_client is not None:
+            client = self._groq_client
+            self._groq_client = None
+            self._groq_api_key = ""
+            close_fn = getattr(client, "close", None)
+            if callable(close_fn):
+                res = close_fn()
+                if inspect.isawaitable(res):
+                    await res
 
     async def offload(self) -> None:
         async with self._lock:
@@ -157,9 +182,9 @@ class STTEngine:
             return await asyncio.to_thread(_run)
 
     async def _transcribe_groq(self, pcm: bytes, hotwords: str) -> str:
-        from groq import AsyncGroq
-
-        client = AsyncGroq(api_key=config.groq_api_key)
+        client = self._get_groq_client()
+        if client is None:
+            raise RuntimeError("GROQ_API_KEY is empty.")
         res = await client.audio.transcriptions.create(
             file=("speech.wav", pcm48_stereo_to_wav16k(pcm)),
             model=config.groq_stt_model,

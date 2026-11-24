@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from core.store import Store
-from memory.manager import VEC_DIM, MemoryManager, _cosine, local_embed
+from memory.manager import VEC_DIM, MemoryManager, _cosine, _quote_fts_term, local_embed
 
 
 class FakeBus:
@@ -92,6 +92,25 @@ class TestMemoryManager(unittest.IsolatedAsyncioTestCase):
 
         fts_res = await self.mem.recall("not and near", scopes=("global",))
         self.assertIsInstance(fts_res, list)
+
+    async def test_recall_quotes_fts5_keywords_and_double_quotes(self) -> None:
+        mid = await self.mem.remember("Budi suka minum kopi arabika pagi hari", scope="global", importance=0.5)
+        # Age the memory 200 days so recency + importance alone (< 0.16) cannot pass without FTS5 kw_bonus.
+        await self.store.write("UPDATE memories SET created_at = created_at - ? WHERE id = ?", (200 * 86400, mid))
+
+        res_lower = await self.mem.recall("not and near kopi", scopes=("global",))
+        self.assertTrue(res_lower, "Expected FTS5 match for 'not and near kopi'")
+        self.assertIn("kopi arabika", res_lower[0]["content"])
+
+        res_upper = await self.mem.recall("NOT AND NEAR kopi", scopes=("global",))
+        self.assertTrue(res_upper, "Expected FTS5 match for 'NOT AND NEAR kopi'")
+        self.assertIn("kopi arabika", res_upper[0]["content"])
+
+        res_quoted = await self.mem.recall('katanya "kopi" enak', scopes=("global",))
+        self.assertTrue(res_quoted, "Expected FTS5 match for query containing double quotes")
+        self.assertIn("kopi arabika", res_quoted[0]["content"])
+
+        self.assertEqual(_quote_fts_term('ko"pi'), '"ko""pi"')
 
 
 if __name__ == "__main__":

@@ -40,6 +40,10 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
+def _quote_fts_term(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
+
+
 class MemoryManager:
     def __init__(self, store: Store, bus: EventBus) -> None:
         self.store = store
@@ -142,7 +146,7 @@ class MemoryManager:
         fts_hits: set[int] = set()
         words = [w for w in re.findall(r"[a-zA-Z0-9]{3,}", query)][:6]
         if words:
-            fts_q = " OR ".join(words)
+            fts_q = " OR ".join(_quote_fts_term(w) for w in words)
             try:
                 cur = await self.store.conn.execute(
                     "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT 25",

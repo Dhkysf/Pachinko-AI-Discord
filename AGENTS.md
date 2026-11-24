@@ -1,1 +1,1 @@
-- This project requires Python 3.12 (onnxruntime-directml does not yet support 3.13+). Always use `.venv\Scripts\python.exe`.
+- This project targets Python 3.12 (the tested version for this project's dependencies). Always use `.venv\Scripts\python.exe`.

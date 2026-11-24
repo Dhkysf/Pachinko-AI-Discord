@@ -40,6 +40,7 @@ async def shutdown_all(
     uvi_server=None,
     web_task: asyncio.Task | None = None,
     tts=None,
+    stt=None,
     llm=None,
     store=None,
 ) -> None:
@@ -88,6 +89,12 @@ async def shutdown_all(
             await tts.close()
         except Exception:
             log.exception("Failed closing TTS client")
+
+    if stt is not None:
+        try:
+            await stt.close()
+        except Exception:
+            log.exception("Failed closing STT client")
 
     if llm is not None:
         try:
@@ -219,6 +226,7 @@ async def run_all() -> None:
             uvi_server=uvi_server,
             web_task=web_task,
             tts=tts,
+            stt=stt,
             llm=llm,
             store=store,
         )

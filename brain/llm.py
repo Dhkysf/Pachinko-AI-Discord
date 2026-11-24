@@ -7,6 +7,7 @@ Supports:
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -331,12 +332,37 @@ class LLMClient:
     def __init__(self) -> None:
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0))
         self._no_tools_models: set[str] = set()
+        self._gemini_client: Any = None
+        self._gemini_api_key: str = ""
 
     def supports_tools(self) -> bool:
         return not (config.llm_provider == "ollama" and config.ollama_model in self._no_tools_models)
 
+    def _get_gemini_client(self) -> Any:
+        if not config.gemini_api_key:
+            raise RuntimeError("GEMINI_API_KEY is empty and local Ollama is not responding.")
+        if self._gemini_client is None or self._gemini_api_key != config.gemini_api_key:
+            from google import genai
+
+            self._gemini_client = genai.Client(api_key=config.gemini_api_key)
+            self._gemini_api_key = config.gemini_api_key
+        return self._gemini_client
+
     async def close(self) -> None:
         await self._http.aclose()
+        if self._gemini_client is not None:
+            client = self._gemini_client
+            self._gemini_client = None
+            self._gemini_api_key = ""
+            aio = getattr(client, "aio", None)
+            aclose = getattr(aio, "aclose", None)
+            if callable(aclose):
+                res = aclose()
+                if inspect.isawaitable(res):
+                    await res
+            close_fn = getattr(client, "close", None)
+            if callable(close_fn):
+                close_fn()
 
     def active_provider(self) -> str:
         return config.llm_provider
@@ -564,13 +590,8 @@ class LLMClient:
 
     # ---------------- Gemini Cloud Fallback ----------------
     async def _gemini_once(self, messages: list[dict[str, Any]]) -> LLMResponse:
-        from google import genai
+        client = self._get_gemini_client()
         from google.genai import types
-
-        if not config.gemini_api_key:
-            raise RuntimeError("GEMINI_API_KEY is empty and local Ollama is not responding.")
-
-        client = genai.Client(api_key=config.gemini_api_key)
         sys_chunks: list[str] = []
         contents: list[types.Content] = []
         for m in normalize_messages(messages):

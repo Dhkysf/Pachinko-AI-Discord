@@ -52,6 +52,7 @@ Open https://discord.com/developers/applications → select your bot application
 ### 3. Run Setup & Start
 1. Extract the `pachinko` folder (e.g. to `C:\pachinko`).
 2. Double-click **`setup.bat`** → fill in `DISCORD_TOKEN` and `GUILD_ID` when Notepad opens → save.
+   - **Reproducible fallback:** If a fresh `setup.bat` install breaks due to a newer transitive dependency, install the known-good snapshot instead: `.venv\Scripts\python.exe -m pip install -r requirements-lock.txt`.
 3. Double-click **`run.bat`**.
 4. Open **`http://127.0.0.1:7878`** in your browser to open **Pachinko Studio**!
    - **Panel Auth (`.env`):** If `PANEL_TOKEN` is set, open `http://127.0.0.1:7878/?token=<PANEL_TOKEN>` (the token is saved in `sessionStorage` and stripped from the URL).
