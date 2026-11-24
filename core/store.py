@@ -1,9 +1,12 @@
 """Single SQLite storage (WAL mode) for all memories, emotions, coins, & settings."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
+from collections.abc import AsyncIterator, Iterable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -204,12 +207,28 @@ class Store:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+        self._write_lock = asyncio.Lock()
 
     @property
     def conn(self) -> aiosqlite.Connection:
         if self._conn is None:
             raise RuntimeError("Store is not initialized (call await store.init() first)")
         return self._conn
+
+    @asynccontextmanager
+    async def write_tx(self) -> AsyncIterator[aiosqlite.Connection]:
+        async with self._write_lock:
+            conn = self.conn
+            try:
+                yield conn
+                await conn.commit()
+            except BaseException:
+                await conn.rollback()
+                raise
+
+    async def write(self, sql: str, params: Iterable[Any] = ()) -> aiosqlite.Cursor:
+        async with self.write_tx() as conn:
+            return await conn.execute(sql, params)
 
     async def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,11 +243,10 @@ class Store:
             self._conn = None
 
     async def log_event(self, ev_id: str, topic: str, ts: float, payload: dict[str, Any]) -> None:
-        await self.conn.execute(
+        await self.write(
             "INSERT OR IGNORE INTO events_log (id, topic, ts, payload_json) VALUES (?, ?, ?, ?)",
             (ev_id, topic, ts, json.dumps(payload, ensure_ascii=False)),
         )
-        await self.conn.commit()
 
     async def get_kv(self, key: str, default: Any = None) -> Any:
         cur = await self.conn.execute("SELECT value_json FROM kv_settings WHERE key = ?", (key,))
@@ -236,12 +254,11 @@ class Store:
         return json.loads(row["value_json"]) if row else default
 
     async def set_kv(self, key: str, value: Any) -> None:
-        await self.conn.execute(
+        await self.write(
             "INSERT INTO kv_settings (key, value_json, updated_at) VALUES (?, ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
             (key, json.dumps(value, ensure_ascii=False), time.time()),
         )
-        await self.conn.commit()
 
     async def get_channel_mode(self, channel_id: str, default_mode: str) -> str:
         cur = await self.conn.execute("SELECT mode FROM channel_modes WHERE channel_id = ?", (str(channel_id),))
@@ -249,9 +266,8 @@ class Store:
         return row["mode"] if row else default_mode
 
     async def set_channel_mode(self, channel_id: str, mode: str) -> None:
-        await self.conn.execute(
+        await self.write(
             "INSERT INTO channel_modes (channel_id, mode, updated_at) VALUES (?, ?, ?) "
             "ON CONFLICT(channel_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at",
             (str(channel_id), mode, time.time()),
         )
-        await self.conn.commit()

@@ -460,11 +460,10 @@ def build_discord_bot(
     @discord.option("izinkan", bool, description="True = boleh nimbrung, False = hanya merespons kalau kamu panggil")
     async def cmd_privacy(ctx: discord.ApplicationContext, izinkan):
         await heart.get_person(str(ctx.author.id), ctx.author.display_name)
-        await store.conn.execute(
+        await store.write(
             "UPDATE heart_person SET opt_out_approach = ? WHERE user_id = ?",
             (0 if izinkan else 1, str(ctx.author.id)),
         )
-        await store.conn.commit()
         status = "diizinkan menyapa otomatis" if izinkan else "hanya membalas saat kamu panggil"
         await ctx.respond(f"🔒 Pengaturan privasi disimpan: **{status}**.", ephemeral=True)
 

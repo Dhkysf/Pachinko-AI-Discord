@@ -59,7 +59,7 @@ class MemoryManager:
         interrupted: int | bool = 0,
         heard_content: str | None = None,
     ) -> int:
-        cur = await self.store.conn.execute(
+        cur = await self.store.write(
             "INSERT INTO transcripts "
             "(room_id, speaker_id, speaker_name, role, modality, content, heard_content, interrupted, emotion, ts) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -76,7 +76,6 @@ class MemoryManager:
                 time.time(),
             ),
         )
-        await self.store.conn.commit()
         row_id = int(cur.lastrowid)
         await self.bus.emit(
             "memory.transcript",
@@ -92,11 +91,10 @@ class MemoryManager:
 
     async def mark_interrupted(self, entry_id: int, heard_content: str) -> None:
         """Record only the words the user actually heard before interruption (barge-in)."""
-        await self.store.conn.execute(
+        await self.store.write(
             "UPDATE transcripts SET interrupted = 1, heard_content = ? WHERE id = ?",
             (heard_content, entry_id),
         )
-        await self.store.conn.commit()
 
     async def recent_transcript(self, room_id: str, limit: int = 24) -> list[dict[str, Any]]:
         cur = await self.store.conn.execute(
@@ -107,9 +105,9 @@ class MemoryManager:
         return [dict(r) for r in reversed(rows)]
 
     async def clear_room_transcript(self, room_id: str) -> None:
-        await self.store.conn.execute("DELETE FROM transcripts WHERE room_id = ?", (str(room_id),))
-        await self.store.conn.execute("DELETE FROM transcript_summaries WHERE room_id = ?", (str(room_id),))
-        await self.store.conn.commit()
+        async with self.store.write_tx() as conn:
+            await conn.execute("DELETE FROM transcripts WHERE room_id = ?", (str(room_id),))
+            await conn.execute("DELETE FROM transcript_summaries WHERE room_id = ?", (str(room_id),))
 
     # ---------------- L2: Hybrid Episodic/Semantic Memory ----------------
     async def remember(
@@ -124,12 +122,11 @@ class MemoryManager:
         if not clean:
             return 0
         vec = local_embed(clean)
-        cur = await self.store.conn.execute(
+        cur = await self.store.write(
             "INSERT INTO memories (scope, subject_id, content, importance, vec_json, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (scope, str(subject_id), clean, max(0.1, min(1.0, importance)), json.dumps(vec), time.time()),
         )
-        await self.store.conn.commit()
         return int(cur.lastrowid)
 
     async def recall(
@@ -183,22 +180,23 @@ class MemoryManager:
         clean = fact.strip()
         if not clean:
             return 0
-        # Avoid exact duplicates
-        cur = await self.store.conn.execute(
-            "SELECT line_id FROM notebook WHERE doc_key = ? AND active = 1 AND lower(fact) = lower(?)",
-            (doc_key, clean),
-        )
-        existing = await cur.fetchone()
-        if existing:
-            return int(existing["line_id"])
+        async with self.store.write_tx() as conn:
+            # Avoid exact duplicates
+            cur = await conn.execute(
+                "SELECT line_id FROM notebook WHERE doc_key = ? AND active = 1 AND lower(fact) = lower(?)",
+                (doc_key, clean),
+            )
+            existing = await cur.fetchone()
+            if existing:
+                return int(existing["line_id"])
 
-        cur = await self.store.conn.execute(
-            "INSERT INTO notebook (doc_key, fact, evidence, active, updated_at) VALUES (?, ?, ?, 1, ?)",
-            (doc_key, clean, evidence[:200], time.time()),
-        )
-        await self.store.conn.commit()
+            cur = await conn.execute(
+                "INSERT INTO notebook (doc_key, fact, evidence, active, updated_at) VALUES (?, ?, ?, 1, ?)",
+                (doc_key, clean, evidence[:200], time.time()),
+            )
+            row_id = int(cur.lastrowid)
         await self.bus.emit("memory.note_added", doc_key=doc_key, fact=clean)
-        return int(cur.lastrowid)
+        return row_id
 
     async def get_notes(self, doc_key: str, limit: int = 12) -> list[dict[str, Any]]:
         cur = await self.store.conn.execute(
@@ -244,24 +242,23 @@ class MemoryManager:
         note: str,
         due_at: float,
     ) -> int:
-        cur = await self.store.conn.execute(
+        cur = await self.store.write(
             "INSERT INTO schedules (kind, room_id, user_id, user_name, note, due_at, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (kind, str(room_id), str(user_id), user_name, note.strip(), due_at, time.time()),
         )
-        await self.store.conn.commit()
         return int(cur.lastrowid)
 
     async def pop_due_schedules(self) -> list[dict[str, Any]]:
         now = time.time()
-        cur = await self.store.conn.execute(
-            "SELECT * FROM schedules WHERE done = 0 AND due_at <= ? ORDER BY due_at ASC LIMIT 10",
-            (now,),
-        )
-        rows = [dict(r) for r in await cur.fetchall()]
-        if rows:
-            ids = [r["id"] for r in rows]
-            q = ",".join("?" for _ in ids)
-            await self.store.conn.execute(f"UPDATE schedules SET done = 1 WHERE id IN ({q})", ids)
-            await self.store.conn.commit()
+        async with self.store.write_tx() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM schedules WHERE done = 0 AND due_at <= ? ORDER BY due_at ASC LIMIT 10",
+                (now,),
+            )
+            rows = [dict(r) for r in await cur.fetchall()]
+            if rows:
+                ids = [r["id"] for r in rows]
+                q = ",".join("?" for _ in ids)
+                await conn.execute(f"UPDATE schedules SET done = 1 WHERE id IN ({q})", ids)
         return rows

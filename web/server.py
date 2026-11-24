@@ -158,14 +158,14 @@ def create_web_app(
         _check_auth(req)
         body = await req.json()
         await heart.get_person(user_id)
-        if "nickname" in body:
-            await store.conn.execute("UPDATE heart_person SET nickname=? WHERE user_id=?", (str(body["nickname"]), user_id))
-        if "impression" in body:
-            await store.conn.execute("UPDATE heart_person SET impression=? WHERE user_id=?", (str(body["impression"]), user_id))
-        if "bond" in body:
-            b = max(-100.0, min(1000.0, float(body["bond"])))
-            await store.conn.execute("UPDATE heart_person SET bond=? WHERE user_id=?", (b, user_id))
-        await store.conn.commit()
+        async with store.write_tx() as conn:
+            if "nickname" in body:
+                await conn.execute("UPDATE heart_person SET nickname=? WHERE user_id=?", (str(body["nickname"]), user_id))
+            if "impression" in body:
+                await conn.execute("UPDATE heart_person SET impression=? WHERE user_id=?", (str(body["impression"]), user_id))
+            if "bond" in body:
+                b = max(-100.0, min(1000.0, float(body["bond"])))
+                await conn.execute("UPDATE heart_person SET bond=? WHERE user_id=?", (b, user_id))
         return {"ok": True}
 
     @app.get("/api/memory")

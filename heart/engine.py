@@ -148,14 +148,13 @@ class HeartEngine:
         }
 
     async def _save_self(self) -> None:
-        await self.store.conn.execute(
+        await self.store.write(
             "INSERT INTO heart_self (id, emotions_json, valence, arousal, energy, updated_at) "
             "VALUES (1, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET emotions_json=excluded.emotions_json, "
             "valence=excluded.valence, arousal=excluded.arousal, energy=excluded.energy, updated_at=excluded.updated_at",
             (json.dumps(self.emotions), self.valence, self.arousal, self.energy, time.time()),
         )
-        await self.store.conn.commit()
 
     async def get_person(self, user_id: str, display_name: str = "User") -> dict[str, Any]:
         uid = str(user_id)
@@ -163,11 +162,10 @@ class HeartEngine:
         row = await cur.fetchone()
         if not row:
             now = time.time()
-            await self.store.conn.execute(
-                "INSERT INTO heart_person (user_id, display_name, last_seen) VALUES (?, ?, ?)",
+            await self.store.write(
+                "INSERT OR IGNORE INTO heart_person (user_id, display_name, last_seen) VALUES (?, ?, ?)",
                 (uid, display_name, now),
             )
-            await self.store.conn.commit()
             cur = await self.store.conn.execute("SELECT * FROM heart_person WHERE user_id = ?", (uid,))
             row = await cur.fetchone()
         data = dict(row)
@@ -202,12 +200,11 @@ class HeartEngine:
         new_fam = min(100.0, round(person["familiarity"] + fam_gain, 2))
         self.energy = max(0.15, self.energy - 0.01)
 
-        await self.store.conn.execute(
+        await self.store.write(
             "UPDATE heart_person SET display_name=?, bond=?, familiarity=?, daily_date=?, "
             "daily_counts_json=?, interactions=interactions+1, last_seen=? WHERE user_id=?",
             (display_name, new_bond, new_fam, today, json.dumps(counts), time.time(), str(user_id)),
         )
-        await self.store.conn.commit()
         return await self.get_person(user_id, display_name)
 
     async def apply_feel_block(
@@ -282,11 +279,10 @@ class HeartEngine:
         if updates:
             set_sql = ", ".join(f"{k}=?" for k in updates)
             vals = [*updates.values(), today, json.dumps(counts), user_id]
-            await self.store.conn.execute(
+            await self.store.write(
                 f"UPDATE heart_person SET {set_sql}, daily_date=?, daily_counts_json=? WHERE user_id=?",
                 vals,
             )
-            await self.store.conn.commit()
             updated = await self.get_person(user_id, display_name)
             await self.bus.emit("heart.bond_changed", user_id=user_id, display_name=display_name, bond=updated["bond"], tier=updated["tier"])
 
@@ -299,9 +295,8 @@ class HeartEngine:
         self.emotions["joy"] = min(1.0, self.emotions["joy"] + 0.25)
         self._recompute_mood()
         await self._save_self()
-        await self.store.conn.execute(
+        await self.store.write(
             "UPDATE heart_person SET bond=?, warmth=? WHERE user_id=?",
             (new_bond, new_warmth, str(user_id)),
         )
-        await self.store.conn.commit()
         return await self.get_person(user_id, display_name)

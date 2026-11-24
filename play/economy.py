@@ -81,48 +81,66 @@ class EconomyAndPlay:
         cur = await self.store.conn.execute("SELECT * FROM economy_wallets WHERE user_id = ?", (uid,))
         row = await cur.fetchone()
         if not row:
-            await self.store.conn.execute(
-                "INSERT INTO economy_wallets (user_id, display_name, balance) VALUES (?, ?, 100)",
+            await self.store.write(
+                "INSERT OR IGNORE INTO economy_wallets (user_id, display_name, balance) VALUES (?, ?, 100)",
                 (uid, display_name),
             )
-            await self.store.conn.commit()
             cur = await self.store.conn.execute("SELECT * FROM economy_wallets WHERE user_id = ?", (uid,))
             row = await cur.fetchone()
         return dict(row)
 
     async def add_coins(self, user_id: str, display_name: str, delta: int, reason: str) -> int:
-        w = await self.get_wallet(user_id, display_name)
-        new_bal = max(0, int(w["balance"]) + delta)
-        await self.store.conn.execute(
-            "UPDATE economy_wallets SET display_name = ?, balance = ? WHERE user_id = ?",
-            (display_name, new_bal, str(user_id)),
-        )
-        await self.store.conn.execute(
-            "INSERT INTO economy_ledger (user_id, delta, reason, ts) VALUES (?, ?, ?, ?)",
-            (str(user_id), delta, reason, time.time()),
-        )
-        await self.store.conn.commit()
+        uid = str(user_id)
+        async with self.store.write_tx() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO economy_wallets (user_id, display_name, balance) VALUES (?, ?, 100)",
+                (uid, display_name),
+            )
+            await conn.execute(
+                "UPDATE economy_wallets SET display_name = ?, balance = MAX(0, balance + ?) WHERE user_id = ?",
+                (display_name, delta, uid),
+            )
+            await conn.execute(
+                "INSERT INTO economy_ledger (user_id, delta, reason, ts) VALUES (?, ?, ?, ?)",
+                (uid, delta, reason, time.time()),
+            )
+            cur = await conn.execute("SELECT balance FROM economy_wallets WHERE user_id = ?", (uid,))
+            new_bal = int((await cur.fetchone())["balance"])
         await self.bus.emit("economy.tx", user=display_name, delta=delta, balance=new_bal, reason=reason)
         return new_bal
 
     async def daily_checkin(self, user_id: str, display_name: str) -> dict[str, Any]:
-        w = await self.get_wallet(user_id, display_name)
+        uid = str(user_id)
         today = dt.date.today()
         today_s = today.isoformat()
-        if w["last_daily_date"] == today_s:
-            return {"ok": False, "message": "Lo udah ambil `/daily` hari ini! Balik lagi besok ya.", "wallet": w}
-
         yesterday_s = (today - dt.timedelta(days=1)).isoformat()
-        streak = (int(w["streak"]) + 1) if w["last_daily_date"] == yesterday_s else 1
-        reward = 80 + min(120, streak * 15)
-        fortune_title, fortune_desc = random.choice(FORTUNES)
 
-        await self.store.conn.execute(
-            "UPDATE economy_wallets SET streak = ?, last_daily_date = ? WHERE user_id = ?",
-            (streak, today_s, str(user_id)),
-        )
-        await self.store.conn.commit()
-        new_bal = await self.add_coins(user_id, display_name, reward, f"daily_streak_{streak}")
+        async with self.store.write_tx() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO economy_wallets (user_id, display_name, balance) VALUES (?, ?, 100)",
+                (uid, display_name),
+            )
+            cur = await conn.execute("SELECT * FROM economy_wallets WHERE user_id = ?", (uid,))
+            w = dict(await cur.fetchone())
+            streak = (int(w["streak"]) + 1) if w["last_daily_date"] == yesterday_s else 1
+            reward = 80 + min(120, streak * 15)
+            upd = await conn.execute(
+                "UPDATE economy_wallets "
+                "SET display_name = ?, balance = MAX(0, balance + ?), streak = ?, last_daily_date = ? "
+                "WHERE user_id = ? AND (last_daily_date IS NULL OR last_daily_date != ?)",
+                (display_name, reward, streak, today_s, uid, today_s),
+            )
+            if upd.rowcount == 0:
+                return {"ok": False, "message": "Lo udah ambil `/daily` hari ini! Balik lagi besok ya.", "wallet": w}
+            await conn.execute(
+                "INSERT INTO economy_ledger (user_id, delta, reason, ts) VALUES (?, ?, ?, ?)",
+                (uid, reward, f"daily_streak_{streak}", time.time()),
+            )
+            cur = await conn.execute("SELECT balance FROM economy_wallets WHERE user_id = ?", (uid,))
+            new_bal = int((await cur.fetchone())["balance"])
+
+        fortune_title, fortune_desc = random.choice(FORTUNES)
+        await self.bus.emit("economy.tx", user=display_name, delta=reward, balance=new_bal, reason=f"daily_streak_{streak}")
         await self.heart.touch_interaction(user_id, display_name, modality="text")
         return {
             "ok": True,
@@ -134,31 +152,68 @@ class EconomyAndPlay:
         }
 
     async def draw_card(self, user_id: str, display_name: str, cost: int = 60) -> dict[str, Any]:
-        w = await self.get_wallet(user_id, display_name)
-        if int(w["balance"]) < cost:
-            return {"ok": False, "message": f"Koin kurang! Butuh **{cost} koin**, saldo lo **{w['balance']} koin**."}
-
-        await self.add_coins(user_id, display_name, -cost, "gacha_card")
+        uid = str(user_id)
         weights = [4, 14, 14, 24, 24, 35, 35]
         rarity, title, mood_tag, quote = random.choices(CARD_POOL, weights=weights, k=1)[0]
-        await self.store.conn.execute(
-            "INSERT INTO collection_cards (user_id, rarity, title, mood_tag, quote, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(user_id), rarity, title, mood_tag, quote, time.time()),
-        )
-        await self.store.conn.commit()
+
+        async with self.store.write_tx() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO economy_wallets (user_id, display_name, balance) VALUES (?, ?, 100)",
+                (uid, display_name),
+            )
+            upd = await conn.execute(
+                "UPDATE economy_wallets SET display_name = ?, balance = balance - ? WHERE user_id = ? AND balance >= ?",
+                (display_name, cost, uid, cost),
+            )
+            if upd.rowcount == 0:
+                cur = await conn.execute("SELECT balance FROM economy_wallets WHERE user_id = ?", (uid,))
+                bal = int((await cur.fetchone())["balance"])
+                return {"ok": False, "message": f"Koin kurang! Butuh **{cost} koin**, saldo lo **{bal} koin**."}
+            now = time.time()
+            await conn.execute(
+                "INSERT INTO economy_ledger (user_id, delta, reason, ts) VALUES (?, ?, ?, ?)",
+                (uid, -cost, "gacha_card", now),
+            )
+            await conn.execute(
+                "INSERT INTO collection_cards (user_id, rarity, title, mood_tag, quote, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (uid, rarity, title, mood_tag, quote, now),
+            )
+            cur = await conn.execute("SELECT balance FROM economy_wallets WHERE user_id = ?", (uid,))
+            new_bal = int((await cur.fetchone())["balance"])
+
+        await self.bus.emit("economy.tx", user=display_name, delta=-cost, balance=new_bal, reason="gacha_card")
         return {
             "ok": True,
             "card": {"rarity": rarity, "title": title, "mood_tag": mood_tag, "quote": quote},
-            "balance": int(w["balance"]) - cost,
+            "balance": new_bal,
         }
 
     async def gift_to_character(self, user_id: str, display_name: str, amount: int) -> dict[str, Any]:
         if amount <= 0:
             return {"ok": False, "message": "Jumlah koin harus lebih dari 0."}
-        w = await self.get_wallet(user_id, display_name)
-        if int(w["balance"]) < amount:
-            return {"ok": False, "message": f"Saldo lo cuma **{w['balance']} koin**."}
-        new_bal = await self.add_coins(user_id, display_name, -amount, "gift_character")
+        uid = str(user_id)
+
+        async with self.store.write_tx() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO economy_wallets (user_id, display_name, balance) VALUES (?, ?, 100)",
+                (uid, display_name),
+            )
+            upd = await conn.execute(
+                "UPDATE economy_wallets SET display_name = ?, balance = balance - ? WHERE user_id = ? AND balance >= ?",
+                (display_name, amount, uid, amount),
+            )
+            if upd.rowcount == 0:
+                cur = await conn.execute("SELECT balance FROM economy_wallets WHERE user_id = ?", (uid,))
+                bal = int((await cur.fetchone())["balance"])
+                return {"ok": False, "message": f"Saldo lo cuma **{bal} koin**."}
+            await conn.execute(
+                "INSERT INTO economy_ledger (user_id, delta, reason, ts) VALUES (?, ?, ?, ?)",
+                (uid, -amount, "gift_character", time.time()),
+            )
+            cur = await conn.execute("SELECT balance FROM economy_wallets WHERE user_id = ?", (uid,))
+            new_bal = int((await cur.fetchone())["balance"])
+
+        await self.bus.emit("economy.tx", user=display_name, delta=-amount, balance=new_bal, reason="gift_character")
         person = await self.heart.add_gift_bonus(user_id, display_name, amount)
         return {"ok": True, "balance": new_bal, "person": person}
 
