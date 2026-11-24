@@ -21,7 +21,6 @@ def _profile() -> CharacterProfile:
         default_channel_mode="quiet",
         filler_phrases=[],
         backchannel_words=set(),
-        voice_cfg={},
         identity_md="",
         style_md="",
         examples_md="",

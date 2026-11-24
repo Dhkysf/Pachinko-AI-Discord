@@ -170,7 +170,7 @@ class TestWebInputValidation(unittest.TestCase):
             write_tx=MagicMock(),
         )
         memory = SimpleNamespace(upsert_note=AsyncMock(), remember=AsyncMock())
-        gate = SimpleNamespace(paused=False, approvals={}, set_paused=AsyncMock())
+        gate = SimpleNamespace(paused=False, set_paused=AsyncMock())
         app = create_web_app(
             store=store,
             bus=EventBus(),
@@ -180,8 +180,6 @@ class TestWebInputValidation(unittest.TestCase):
             gate=gate,
             brain=SimpleNamespace(),
             singing=SimpleNamespace(snapshot=lambda: {"current": None, "queue": []}),
-            economy=SimpleNamespace(),
-            tts=SimpleNamespace(),
         )
         return TestClient(app, base_url="http://127.0.0.1:7878"), kv, heart, store, memory, gate
 
@@ -244,7 +242,6 @@ class TestProfileAndToolsGuards(unittest.IsolatedAsyncioTestCase):
             default_channel_mode="quiet",
             filler_phrases=[],
             backchannel_words=set(),
-            voice_cfg={},
             identity_md="",
             style_md="",
             examples_md="",

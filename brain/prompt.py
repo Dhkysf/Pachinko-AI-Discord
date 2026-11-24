@@ -10,6 +10,7 @@ import datetime as dt
 from typing import Any
 
 from brain.profile import CharacterProfile
+from config import config
 from core.safety import data_block, neutralize, safe_name
 
 _LANGUAGE_RULE = (
@@ -87,7 +88,7 @@ def assemble_messages(
     messages.append({"role": "assistant", "content": "Oke, aku inget konteks lawan bicara dan catatan di atas."})
 
     # Block 5: Conversation History (including marker if previously cut off by barge-in)
-    for turn in history[-18:]:
+    for turn in history[-max(1, config.max_history_turns):]:
         role = turn["role"]
         if role == "user":
             sp = safe_name(turn["speaker_name"])

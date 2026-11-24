@@ -155,8 +155,6 @@ async def run_all() -> None:
         gate=gate,
         brain=brain,
         singing=singing,
-        economy=economy,
-        tts=tts,
     )
 
     uvi_cfg = uvicorn.Config(

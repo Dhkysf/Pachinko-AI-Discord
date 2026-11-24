@@ -21,7 +21,6 @@ def _make_profile() -> CharacterProfile:
         default_channel_mode="text",
         filler_phrases=["Hmm?"],
         backchannel_words={"hmm", "iya"},
-        voice_cfg={},
         identity_md="Kamu adalah Pachinko, AI yang ekspresif.",
         style_md="Gaya bicara santai dan hangat.",
         examples_md="User: Halo\nPachinko: Hai juga!",

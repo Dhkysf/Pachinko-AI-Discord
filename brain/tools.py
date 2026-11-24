@@ -71,7 +71,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
-VOICE_TOOL_NAMES = {"web_search", "remember_note", "set_reminder", "queue_song"}
 _ALLOWED_TOOLS: frozenset[str] = frozenset(t["function"]["name"] for t in TOOL_SCHEMAS)
 
 
@@ -85,9 +84,6 @@ class ToolBox:
         self.memory = memory
         self.gate = gate
         self.song_enqueue_cb = song_enqueue_cb
-
-    def set_song_callback(self, cb: Callable[[str, str, str, str], Awaitable[str]]) -> None:
-        self.song_enqueue_cb = cb
 
     async def execute(
         self,

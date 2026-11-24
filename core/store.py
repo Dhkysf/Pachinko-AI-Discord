@@ -71,13 +71,6 @@ CREATE TABLE IF NOT EXISTS transcripts (
 );
 CREATE INDEX IF NOT EXISTS idx_transcripts_room ON transcripts(room_id, id DESC);
 
-CREATE TABLE IF NOT EXISTS transcript_summaries (
-    room_id TEXT PRIMARY KEY,
-    summary TEXT NOT NULL,
-    up_to_id INTEGER NOT NULL,
-    updated_at REAL NOT NULL
-);
-
 -- L2: Episodic & Semantic Memory + FTS5
 CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,7 +133,6 @@ CREATE TABLE IF NOT EXISTS heart_person (
     rapport REAL DEFAULT 0.1,      -- 0 .. 1
     impression TEXT DEFAULT 'Baru kenal, belum banyak ngobrol.',
     opt_out_approach INTEGER DEFAULT 0,
-    opt_out_voice INTEGER DEFAULT 0,
     daily_date TEXT DEFAULT '',
     daily_counts_json TEXT DEFAULT '{}',
     interactions INTEGER DEFAULT 0,

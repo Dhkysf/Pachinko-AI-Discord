@@ -109,9 +109,7 @@ class MemoryManager:
         return [dict(r) for r in reversed(rows)]
 
     async def clear_room_transcript(self, room_id: str) -> None:
-        async with self.store.write_tx() as conn:
-            await conn.execute("DELETE FROM transcripts WHERE room_id = ?", (str(room_id),))
-            await conn.execute("DELETE FROM transcript_summaries WHERE room_id = ?", (str(room_id),))
+        await self.store.write("DELETE FROM transcripts WHERE room_id = ?", (str(room_id),))
 
     # ---------------- L2: Hybrid Episodic/Semantic Memory ----------------
     async def remember(

@@ -27,7 +27,6 @@ def _fake_profile() -> CharacterProfile:
         default_channel_mode="text",
         filler_phrases=["Hmm?"],
         backchannel_words={"hmm", "iya"},
-        voice_cfg={},
         identity_md="Kamu adalah Pachinko.",
         style_md="Santai.",
         examples_md="",

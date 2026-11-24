@@ -22,9 +22,7 @@ from core.store import Store
 from core.vram import vram_guard
 from heart.engine import HeartEngine
 from memory.manager import MemoryManager
-from play.economy import EconomyAndPlay
 from sing.engine import SingingEngine
-from speech.tts import TTSEngine
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -79,8 +77,6 @@ def create_web_app(
     gate: ActionGate,
     brain: BrainRunner,
     singing: SingingEngine,
-    economy: EconomyAndPlay,
-    tts: TTSEngine,
 ) -> FastAPI:
     docs_enabled = not bool(config.panel_token)
     app = FastAPI(
@@ -127,7 +123,6 @@ def create_web_app(
             "heart": heart.state_summary(prof.temperament),
             "autonomy": {
                 "paused": gate.paused,
-                "pending_approvals": [vars(a) for a in gate.approvals.values() if a.status == "pending"],
             },
             "runtime": {
                 "llm_provider": config.llm_provider,

@@ -55,12 +55,12 @@ Open https://discord.com/developers/applications → select your bot application
    - **Reproducible fallback:** If a fresh `setup.bat` install breaks due to a newer transitive dependency, install the known-good snapshot instead: `.venv\Scripts\python.exe -m pip install -r requirements-lock.txt`.
 3. Double-click **`run.bat`**.
 4. Open **`http://127.0.0.1:7878`** in your browser to open **Pachinko Studio**!
-   - **Panel Auth (`.env`):** If `PANEL_TOKEN` is set, open `http://127.0.0.1:7878/?token=<PANEL_TOKEN>` (the token is saved in `sessionStorage` and stripped from the URL).
+   - **Panel Auth (`.env`, optional):** If `PANEL_TOKEN` is set, open `http://127.0.0.1:7878/?token=<PANEL_TOKEN>` (the token is saved in `sessionStorage` and stripped from the URL).
    - **Configuration (`.env`):** Set `LLM_TEMPERATURE` (`0.0`–`2.0`; leave empty to use the model/Ollama Modelfile default).
 
 ---
 
-## 🎮 Discord Slash Commands (15 Commands)
+## 🎮 Discord Slash Commands (17 Commands)
 
 | Command | Description |
 |---|---|

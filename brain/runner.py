@@ -11,6 +11,7 @@ from brain.llm import LLMClient
 from brain.profile import ProfileManager
 from brain.prompt import assemble_messages
 from brain.tools import TOOL_SCHEMAS, ToolBox
+from config import config
 from core.bus import EventBus
 from core.safety import filter_outgoing
 from core.store import Store
@@ -95,7 +96,7 @@ class BrainRunner:
         notes = await self.memory.get_notes(f"person:{user_id}", limit=8)
         scopes = ("global", f"person:{user_id}", f"room:{room_id}")
         recalled = await self.memory.recall(user_text, scopes=scopes, limit=4)
-        history = await self.memory.recent_transcript(room_id, limit=20)
+        history = await self.memory.recent_transcript(room_id, limit=max(1, config.max_history_turns))
         directives = await self.store.get_kv("owner_directives", "") or ""
         heart_state = self.heart.state_summary(prof.temperament)
 

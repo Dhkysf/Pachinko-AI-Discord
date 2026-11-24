@@ -27,11 +27,9 @@ def _make_app():
         profiles=SimpleNamespace(current=prof),
         heart=SimpleNamespace(state_summary=lambda _t: {"dominant": "neutral", "valence": 0.0, "energy": 0.8, "active_emotions": {}}),
         memory=SimpleNamespace(),
-        gate=SimpleNamespace(paused=False, approvals={}),
+        gate=SimpleNamespace(paused=False),
         brain=SimpleNamespace(),
         singing=SimpleNamespace(snapshot=lambda: {"current": None, "queue": []}),
-        economy=SimpleNamespace(),
-        tts=SimpleNamespace(),
     )
 
 

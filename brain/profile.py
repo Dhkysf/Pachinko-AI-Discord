@@ -24,7 +24,6 @@ class CharacterProfile:
     default_channel_mode: str
     filler_phrases: list[str]
     backchannel_words: set[str]
-    voice_cfg: dict[str, Any]
     identity_md: str
     style_md: str
     examples_md: str
@@ -88,7 +87,6 @@ class ProfileManager:
             default_channel_mode=beh.get("default_channel_mode", config.default_channel_mode),
             filler_phrases=list(beh.get("filler_phrases", ["Hmm?", "Bentar ya..."])),
             backchannel_words={w.lower() for w in beh.get("backchannel_words", ["hmm", "iya", "oke", "ya", "oh"])},
-            voice_cfg=dict(meta.get("voice", {})),
             identity_md=(pdir / "identity.md").read_text(encoding="utf-8").strip() if (pdir / "identity.md").exists() else "",
             style_md=(pdir / "style.md").read_text(encoding="utf-8").strip() if (pdir / "style.md").exists() else "",
             examples_md=(pdir / "examples.md").read_text(encoding="utf-8").strip() if (pdir / "examples.md").exists() else "",

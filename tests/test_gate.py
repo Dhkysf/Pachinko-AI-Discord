@@ -40,7 +40,6 @@ class TestActionGate(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(RISK_LEVELS["remember_note"], "low")
         self.assertEqual(RISK_LEVELS["set_reminder"], "medium")
         self.assertEqual(RISK_LEVELS["queue_song"], "medium")
-        self.assertEqual(RISK_LEVELS["proactive_dm"], "high")
 
         ok1, _ = await self.gate.check("web_search", {}, requester_id="42", requester_name="Budi")
         ok2, _ = await self.gate.check("web_search", {}, requester_id="42", requester_name="Budi")
@@ -66,33 +65,27 @@ class TestActionGate(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Wait a moment", msg2)
         self.assertTrue(ok3)
 
-    async def test_owner_bypasses_cooldown_and_high_risk_approval(self) -> None:
+    async def test_owner_bypasses_cooldown(self) -> None:
         clock = [1000.0]
         with patch("brain.gate.time.time", side_effect=lambda: clock[0]):
             ok1, _ = await self.gate.check("set_reminder", {}, requester_id="999", requester_name="Owner")
             ok2, _ = await self.gate.check("set_reminder", {}, requester_id="999", requester_name="Owner")
-            ok_hi, _ = await self.gate.check("proactive_dm", {}, requester_id="999", requester_name="Owner")
 
         self.assertTrue(ok1)
         self.assertTrue(ok2)
-        self.assertTrue(ok_hi)
-        self.assertEqual(self.gate.approvals, {})
 
-    async def test_high_risk_creates_pending_approval_and_resolves(self) -> None:
-        ok, msg = await self.gate.check(
-            "proactive_dm", {"to": "1"}, requester_id="42", requester_name="Budi"
-        )
-        self.assertFalse(ok)
-        self.assertIn("awaiting owner approval", msg)
-        self.assertEqual(len(self.gate.approvals), 1)
-        req_id = next(iter(self.gate.approvals))
-        self.assertEqual(self.gate.approvals[req_id].status, "pending")
-        self.assertTrue(any(t == "gate.approval_requested" for t, _ in self.bus.events))
-
-        approved = await self.gate.resolve_approval(req_id, True)
-        self.assertIsNotNone(approved)
-        self.assertEqual(approved.status, "approved")  # type: ignore[union-attr]
-        self.assertIsNone(await self.gate.resolve_approval("missing", False))
+    async def test_high_risk_requires_owner_privileges(self) -> None:
+        with patch.dict(RISK_LEVELS, {"dangerous_op": "high"}):
+            ok_user, msg = await self.gate.check(
+                "dangerous_op", {}, requester_id="42", requester_name="Budi"
+            )
+            ok_owner, _ = await self.gate.check(
+                "dangerous_op", {}, requester_id="999", requester_name="Owner"
+            )
+        self.assertFalse(ok_user)
+        self.assertIn("owner privileges", msg)
+        self.assertTrue(any(t == "gate.decision" and p.get("reason") == "owner_only" for t, p in self.bus.events))
+        self.assertTrue(ok_owner)
 
     async def test_paused_gate_blocks_autonomous_and_persists(self) -> None:
         await self.gate.set_paused(True)
