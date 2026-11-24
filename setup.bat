@@ -38,6 +38,8 @@ if not exist .env (
 echo [3/3] Downloading offline local voice model ^& checking system readiness...
 .venv\Scripts\python.exe setup_models.py
 
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0create_shortcut.ps1"
+
 echo.
-echo Setup complete! Double-click run.bat to start the Bot + Web Panel.
+echo Setup complete! Double-click Pachinko.lnk (or Pachinko.pyw) to open Pachinko Control.
 pause

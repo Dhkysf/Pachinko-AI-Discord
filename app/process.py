@@ -1,0 +1,419 @@
+"""Bot process manager, status polling, log tailing, and app settings (no GUI)."""
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+from dotenv import dotenv_values
+
+from core.runtime import (
+    EXIT_ALREADY_RUNNING,
+    EXIT_OK,
+    atomic_write_json,
+    is_python_process,
+)
+
+STATE_STOPPED = "Stopped"
+STATE_STARTING = "Starting"
+STATE_RUNNING = "Running"
+STATE_STOPPING = "Stopping"
+STATE_CRASHED = "Crashed"
+STATE_ALREADY_RUNNING = "Already running"
+
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+DEFAULT_SETTINGS: dict[str, bool] = {
+    "start_bot_on_open": False,
+    "start_with_windows": False,
+    "auto_restart_on_crash": False,
+    "minimize_to_tray_on_close": True,
+}
+
+_STATUS_MAP = {
+    "starting": STATE_STARTING,
+    "running": STATE_RUNNING,
+    "stopping": STATE_STOPPING,
+}
+
+
+@dataclass(frozen=True)
+class BotStatus:
+    state: str
+    external: bool = False
+    pid: int | None = None
+    started: int | None = None
+    uptime: int = 0
+    discord_ready: bool = False
+    llm_ok: bool = False
+    voice_sessions: int = 0
+    exit_code: int | None = None
+
+
+def format_uptime(seconds: int) -> str:
+    """Format uptime seconds into compact human text (e.g. '45s', '13m', '2h 13m')."""
+    secs = max(0, int(seconds))
+    if secs < 60:
+        return f"{secs}s"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m"
+    hours, rem_mins = divmod(mins, 60)
+    return f"{hours}h {rem_mins}m"
+
+
+def tail_log_lines(log_path: Path, max_lines: int = 300, max_bytes: int = 131072) -> str:
+    """Read up to the last max_lines of a UTF-8 log file without keeping it open."""
+    if not log_path.exists():
+        return ""
+    try:
+        with log_path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            offset = max(0, size - max_bytes)
+            f.seek(offset, os.SEEK_SET)
+            raw = f.read()
+    except OSError:
+        return ""
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if offset > 0 and lines:
+        # Drop partial first line when we seeked into the middle of the file.
+        lines = lines[1:]
+    return "\n".join(lines[-max_lines:])
+
+
+def load_settings(path: Path) -> dict[str, bool]:
+    """Load app_settings.json merged over DEFAULT_SETTINGS."""
+    settings = dict(DEFAULT_SETTINGS)
+    if not path.exists():
+        return settings
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            for key in DEFAULT_SETTINGS:
+                if key in raw:
+                    settings[key] = bool(raw[key])
+    except (OSError, ValueError, TypeError):
+        pass
+    return settings
+
+
+def save_settings(path: Path, settings: dict[str, bool]) -> None:
+    """Persist app_settings.json atomically."""
+    clean = {key: bool(settings.get(key, default)) for key, default in DEFAULT_SETTINGS.items()}
+    atomic_write_json(path, clean)
+
+
+def read_panel_port(root_dir: Path) -> int:
+    """Read only PANEL_PORT from .env (default 7878) without mutating os.environ."""
+    env_path = root_dir / ".env"
+    if not env_path.exists():
+        return 7878
+    try:
+        raw = dotenv_values(env_path).get("PANEL_PORT")
+        if raw is not None and str(raw).strip():
+            return int(str(raw).strip())
+    except (OSError, ValueError, TypeError):
+        pass
+    return 7878
+
+
+def read_ollama_url(root_dir: Path) -> str:
+    """Read only OLLAMA_BASE_URL from .env (default http://127.0.0.1:11434)."""
+    env_path = root_dir / ".env"
+    if not env_path.exists():
+        return "http://127.0.0.1:11434"
+    try:
+        raw = dotenv_values(env_path).get("OLLAMA_BASE_URL")
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    except OSError:
+        pass
+    return "http://127.0.0.1:11434"
+
+
+class BotProcessManager:
+    """Manages the bot process lifecycle, status.json polling, and crash restarts."""
+
+    def __init__(
+        self,
+        root_dir: Path,
+        *,
+        data_dir: Path | None = None,
+        bot_cmd: list[str] | None = None,
+        auto_restart: bool = False,
+        max_restarts: int = 3,
+        restart_window_sec: float = 600.0,
+        is_python_pid: Callable[[int], bool] = is_python_process,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.root_dir = Path(root_dir)
+        self.data_dir = Path(data_dir) if data_dir is not None else (self.root_dir / "data")
+        self.run_dir = self.data_dir / "run"
+        self.lock_path = self.run_dir / "bot.lock"
+        self.status_path = self.run_dir / "status.json"
+        self.stop_path = self.run_dir / "stop.request"
+        self.log_path = self.data_dir / "logs" / "pachinko.log"
+        self.bot_cmd = list(bot_cmd) if bot_cmd is not None else [
+            str(self.root_dir / ".venv" / "Scripts" / "python.exe"),
+            str(self.root_dir / "main.py"),
+        ]
+        self.auto_restart = auto_restart
+        self.max_restarts = max_restarts
+        self.restart_window_sec = restart_window_sec
+        self._is_python_pid = is_python_pid
+        self._clock = clock
+
+        self._lock = threading.RLock()
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._stopping = False
+        self._stop_requested = False
+        self._terminal_state = STATE_STOPPED
+        self._last_exit_code: int | None = None
+        self._restart_timestamps: list[float] = []
+
+    def _read_json(self, path: Path) -> dict[str, Any] | None:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else None
+        except (OSError, ValueError, TypeError):
+            return None
+
+    def _read_live_lock_pid(self) -> tuple[int | None, int | None]:
+        data = self._read_json(self.lock_path)
+        if not data:
+            return None, None
+        pid = data.get("pid")
+        started = data.get("started")
+        if isinstance(pid, int) and self._is_python_pid(pid):
+            return pid, started if isinstance(started, int) else None
+        return None, None
+
+    def _spawn(self) -> None:
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.stop_path.unlink(missing_ok=True)
+        self._stopping = False
+        self._stop_requested = False
+        self._proc = subprocess.Popen(
+            self.bot_cmd,
+            cwd=str(self.root_dir),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_CREATE_NO_WINDOW,
+        )
+
+    def start(self) -> bool:
+        """Start the bot if not already running (managed or external)."""
+        with self._lock:
+            if self._proc is not None and self._proc.poll() is None:
+                return False
+            ext_pid, _ = self._read_live_lock_pid()
+            if ext_pid is not None:
+                return False
+            self._terminal_state = STATE_STOPPED
+            self._last_exit_code = None
+            self._restart_timestamps.clear()
+            self._spawn()
+            return True
+
+    def stop(self, timeout: float = 20.0, poll_interval: float = 0.2) -> bool:
+        """Request a clean stop via stop.request and wait up to timeout seconds."""
+        with self._lock:
+            proc = self._proc if (self._proc is not None and self._proc.poll() is None) else None
+            ext_pid, _ = self._read_live_lock_pid() if proc is None else (None, None)
+            if proc is None and ext_pid is None:
+                self._stopping = False
+                return True
+            self._stopping = True
+            self._stop_requested = True
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            self.stop_path.write_text("", encoding="utf-8")
+
+        deadline = self._clock() + max(0.0, timeout)
+        while True:
+            if proc is not None:
+                if proc.poll() is not None:
+                    return True
+            else:
+                if not self._is_python_pid(ext_pid):  # type: ignore[arg-type]
+                    return True
+            if self._clock() >= deadline:
+                return False
+            time.sleep(poll_interval)
+
+    def cancel_stop(self) -> None:
+        """Clear stopping flags if the user declined Force stop."""
+        with self._lock:
+            self._stopping = False
+            self._stop_requested = False
+
+    def force_stop(self, pid: int | None = None) -> bool:
+        """Force-kill the bot process tree and clean up stale runtime files."""
+        with self._lock:
+            proc = self._proc
+            target_pid = pid
+            if target_pid is None:
+                if proc is not None and proc.poll() is None:
+                    target_pid = proc.pid
+                else:
+                    target_pid, _ = self._read_live_lock_pid()
+
+            self._stopping = False
+            self._stop_requested = True
+            if target_pid is None:
+                self._terminal_state = STATE_STOPPED
+                return True
+
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/PID", str(target_pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=_CREATE_NO_WINDOW,
+                check=False,
+            )
+        else:
+            try:
+                os.kill(target_pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+        if proc is not None:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            try:
+                proc.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                pass
+
+        with self._lock:
+            still_alive = (
+                (proc is not None and proc.poll() is None)
+                or self._is_python_pid(target_pid)
+            )
+            if not still_alive:
+                self._proc = None
+                self._terminal_state = STATE_STOPPED
+                self._last_exit_code = None
+                self.stop_path.unlink(missing_ok=True)
+                self.status_path.unlink(missing_ok=True)
+                lock_data = self._read_json(self.lock_path)
+                if lock_data and lock_data.get("pid") == target_pid:
+                    self.lock_path.unlink(missing_ok=True)
+                return True
+            return False
+
+    def restart(
+        self,
+        timeout: float = 20.0,
+        on_timeout_force: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Stop the bot (optionally force-stopping on timeout) and start it again."""
+        if not self.stop(timeout=timeout):
+            if on_timeout_force is not None and on_timeout_force():
+                if not self.force_stop():
+                    return False
+            else:
+                self.cancel_stop()
+                return False
+        return self.start()
+
+    def _status_from_file(self, expected_pid: int | None, default_state: str, *, external: bool) -> BotStatus:
+        data = self._read_json(self.status_path)
+        if data and (expected_pid is None or data.get("pid") == expected_pid):
+            raw_state = str(data.get("state", "")).lower()
+            state = STATE_STOPPING if self._stopping else _STATUS_MAP.get(raw_state, default_state)
+            started = data.get("started")
+            started_int = started if isinstance(started, int) else None
+            uptime = max(0, int(time.time()) - started_int) if started_int is not None else 0
+            pid = data.get("pid") if isinstance(data.get("pid"), int) else expected_pid
+            return BotStatus(
+                state=state,
+                external=external,
+                pid=pid,
+                started=started_int,
+                uptime=uptime,
+                discord_ready=bool(data.get("discord_ready", False)),
+                llm_ok=bool(data.get("llm_ok", False)),
+                voice_sessions=int(data.get("voice_sessions", 0) or 0),
+            )
+        state = STATE_STOPPING if self._stopping else default_state
+        return BotStatus(state=state, external=external, pid=expected_pid)
+
+    def poll(self) -> BotStatus:
+        """Inspect process state and status.json, handling crash auto-restarts."""
+        with self._lock:
+            if self._proc is not None:
+                rc = self._proc.poll()
+                if rc is None:
+                    return self._status_from_file(None, STATE_STARTING, external=False)
+
+                # Managed process has exited.
+                self._proc = None
+                self._last_exit_code = rc
+                was_stop_requested = self._stop_requested
+                self._stopping = False
+                self._stop_requested = False
+
+                if was_stop_requested or rc == EXIT_OK:
+                    self._terminal_state = STATE_STOPPED
+                elif rc == EXIT_ALREADY_RUNNING:
+                    self._terminal_state = STATE_ALREADY_RUNNING
+                else:
+                    now = self._clock()
+                    cutoff = now - self.restart_window_sec
+                    self._restart_timestamps = [t for t in self._restart_timestamps if t >= cutoff]
+                    if self.auto_restart and len(self._restart_timestamps) < self.max_restarts:
+                        self._restart_timestamps.append(now)
+                        self._spawn()
+                        return BotStatus(state=STATE_STARTING, pid=self._proc.pid)
+                    self._terminal_state = STATE_CRASHED
+
+            ext_pid, ext_started = self._read_live_lock_pid()
+            if ext_pid is not None:
+                if self._terminal_state == STATE_ALREADY_RUNNING:
+                    status = self._status_from_file(ext_pid, STATE_ALREADY_RUNNING, external=True)
+                    return BotStatus(
+                        state=STATE_ALREADY_RUNNING,
+                        external=True,
+                        pid=ext_pid,
+                        started=status.started or ext_started,
+                        uptime=status.uptime,
+                        discord_ready=status.discord_ready,
+                        llm_ok=status.llm_ok,
+                        voice_sessions=status.voice_sessions,
+                        exit_code=self._last_exit_code,
+                    )
+                status = self._status_from_file(ext_pid, STATE_RUNNING, external=True)
+                if status.started is None and ext_started is not None:
+                    return BotStatus(
+                        state=status.state,
+                        external=True,
+                        pid=ext_pid,
+                        started=ext_started,
+                        uptime=max(0, int(time.time()) - ext_started),
+                        discord_ready=status.discord_ready,
+                        llm_ok=status.llm_ok,
+                        voice_sessions=status.voice_sessions,
+                    )
+                return status
+
+            if self._stopping:
+                self._stopping = False
+                self._stop_requested = False
+                self._terminal_state = STATE_STOPPED
+
+            return BotStatus(state=self._terminal_state, exit_code=self._last_exit_code)

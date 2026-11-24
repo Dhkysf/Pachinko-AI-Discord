@@ -22,3 +22,7 @@ yt-dlp>=2026.11.23
 ddgs>=9.16.1,<10
 google-genai>=3.6.1,<4
 groq>=1.7.0,<2
+
+# Desktop Control App (System Tray)
+pystray>=0.19.5,<1
+Pillow>=13.0.0,<14

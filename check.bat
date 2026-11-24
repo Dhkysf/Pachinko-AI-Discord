@@ -9,7 +9,7 @@ if not exist .venv\Scripts\python.exe (
 
 set FAILED=0
 echo Running compileall...
-.venv\Scripts\python.exe -m compileall -q brain core discord_bot heart memory play sing speech voice web tests config.py main.py setup_models.py
+.venv\Scripts\python.exe -m compileall -q brain core discord_bot heart memory play sing speech voice web app tests config.py main.py setup_models.py Pachinko.pyw
 if errorlevel 1 set FAILED=1
 
 echo Running offline unit tests...
@@ -18,7 +18,7 @@ if errorlevel 1 set FAILED=1
 
 echo.
 if %FAILED%==0 (
-    echo PASS
+    echo PASS ^(Tip: you can also run checks from Pachinko Control via Pachinko.lnk^)
 ) else (
     echo FAIL
 )

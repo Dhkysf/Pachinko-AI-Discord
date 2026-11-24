@@ -8,3 +8,5 @@ data/
 models/
 AUDIT.md
 AUDIT-old.md
+*.lnk
+app/pachinko.ico

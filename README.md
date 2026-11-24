@@ -53,10 +53,17 @@ Open https://discord.com/developers/applications → select your bot application
 1. Extract the `pachinko` folder (e.g. to `C:\pachinko`).
 2. Double-click **`setup.bat`** → fill in `DISCORD_TOKEN` and `GUILD_ID` when Notepad opens → save.
    - **Reproducible fallback:** If a fresh `setup.bat` install breaks due to a newer transitive dependency, install the known-good snapshot instead: `.venv\Scripts\python.exe -m pip install -r requirements-lock.txt`.
-3. Double-click **`run.bat`**.
+3. Double-click **`Pachinko.lnk`** (or **`Pachinko.pyw`**) to open **Pachinko Control**, then click **Start bot** (`run.bat` remains available as a console fallback).
 4. Open **`http://127.0.0.1:7878`** in your browser to open **Pachinko Studio**!
    - **Panel Auth (`.env`, optional):** If `PANEL_TOKEN` is set, open `http://127.0.0.1:7878/?token=<PANEL_TOKEN>` (the token is saved in `sessionStorage` and stripped from the URL).
    - **Configuration (`.env`):** Set `LLM_TEMPERATURE` (`0.0`–`2.0`; leave empty to use the model/Ollama Modelfile default).
+
+### Control App (`Pachinko.lnk` / `Pachinko.pyw`)
+- <!-- Screenshot placeholder: Pachinko Control window & system tray -->
+- **System tray & status:** Shows live bot state (`Stopped`, `Starting`, `Running`, `Stopping`, `Crashed`, `Already running`), uptime, Discord readiness, Ollama health, and voice session count. Closing with **X** minimizes to the tray when enabled.
+- **Quick actions:** Start / Stop / Restart bot, Open web panel, Run checks, Update `yt-dlp`, Repair install (`setup.bat`), Edit settings (`.env` in Notepad), and open logs/project folders.
+- **Emergency fallbacks:** `run.bat` and `check.bat` remain in the root folder if you ever need a plain console run.
+- **Out of scope:** Single-file `.exe` packaging (PyInstaller) and automatic bot code self-updates.
 
 ---
 

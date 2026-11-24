@@ -44,7 +44,7 @@ async def main() -> None:
             f"       ollama pull {config.ollama_model}"
         )
 
-    print("\nDone! Fill in DISCORD_TOKEN in .env, then double-click run.bat.")
+    print("\nDone! Fill in DISCORD_TOKEN in .env, then double-click Pachinko.lnk (or Pachinko.pyw).")
 
 
 if __name__ == "__main__":
