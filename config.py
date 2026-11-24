@@ -1,4 +1,4 @@
-"""Konfigurasi utama Miyoria-Py (dioptimalkan untuk Windows + AMD RX 9070 16GB)."""
+"""Konfigurasi utama Pachinko (dioptimalkan untuk Windows + AMD RX 9070 16GB)."""
 from __future__ import annotations
 
 import os
@@ -47,7 +47,9 @@ class AppConfig:
 
     # --- Karakter & Database ---
     profile_id: str = field(default_factory=lambda: os.getenv("PROFILE_ID", "default"))
-    db_path: Path = field(default_factory=lambda: Path(os.getenv("DB_PATH", str(DATA_DIR / "miyoria.db"))))
+    db_path: Path = field(
+        default_factory=lambda: Path(os.getenv("DB_PATH", "").strip() or str(DATA_DIR / "pachinko.db"))
+    )
 
     # --- LLM (Default: Lokal via Ollama di RX 9070 16GB, dengan opsional Gemini/OpenAI) ---
     # Pilihan: "ollama" | "openai_compat" | "gemini"

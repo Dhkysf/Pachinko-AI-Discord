@@ -35,7 +35,7 @@ $$('.nav-btn').forEach((btn) => {
     btn.classList.add('active');
     const tab = btn.dataset.tab;
     $(`#tab-${tab}`).classList.add('active');
-    $('#page-heading').textContent = HEADINGS[tab] || 'Miyoria Studio';
+    $('#page-heading').textContent = HEADINGS[tab] || 'Pachinko Studio';
     if (tab === 'persona') loadPersona();
     if (tab === 'bonds') loadPeople();
     if (tab === 'memory') loadMemory();

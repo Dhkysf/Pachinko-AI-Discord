@@ -68,8 +68,8 @@ class ProfileManager:
         beh = meta.get("behavior", {})
         return CharacterProfile(
             profile_id=meta.get("id", profile_id),
-            display_name=meta.get("display_name", "Aira"),
-            nicknames=[n.lower() for n in meta.get("nicknames", ["aira"])],
+            display_name=meta.get("display_name", "Pachinko"),
+            nicknames=[n.lower() for n in meta.get("nicknames", ["pachinko"])],
             wake_aliases={k.lower(): v for k, v in meta.get("wake_aliases", {}).items()},
             language=meta.get("language", "id"),
             interests=list(meta.get("interests", [])),

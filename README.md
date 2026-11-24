@@ -1,6 +1,6 @@
-# Miyoria-Py — Autonomous Discord Voice & Chat Companion
+# Pachinko — Autonomous Discord Voice & Chat Companion
 
-Implementasi ulang *clean-room* berbahasa Python penuh yang terinspirasi dari arsitektur V5 Miyoria—dirancang khusus supaya mudah diedit di VS Code pada **Windows 11 + GPU AMD Radeon RX 9070 (16 GB VRAM)** dan 100% aman untuk akun Discord (memakai **Official Bot Token + DAVE E2EE**).
+Bot companion suara & chat Discord berbahasa Python penuh (inspired by the architecture of owenliu0924/Miyoria, no code copied)—dirancang khusus supaya mudah diedit di VS Code pada **Windows 11 + GPU AMD Radeon RX 9070 (16 GB VRAM)** dan 100% aman untuk akun Discord (memakai **Official Bot Token + DAVE E2EE**).
 
 ---
 
@@ -50,10 +50,10 @@ ollama pull qwen3:8b
 Buka https://discord.com/developers/applications → pilih aplikasi bot kamu → menu **Bot** → nyalakan **Message Content Intent** → Save Changes. *(Jika belum dinyalakan, bot tetap berjalan aman dalam mode Voice + Slash Command).*
 
 ### 3. Jalankan Setup & Start
-1. Ekstrak folder `miyoria-py` (mis. ke `C:\miyoria-py`).
+1. Ekstrak folder `pachinko` (mis. ke `C:\pachinko`).
 2. Klik dua kali **`setup.bat`** → isi `DISCORD_TOKEN` dan `GUILD_ID` saat Notepad terbuka → simpan.
 3. Klik dua kali **`run.bat`**.
-4. Buka **`http://127.0.0.1:7878`** di browser untuk membuka **Miyoria Control Studio**!
+4. Buka **`http://127.0.0.1:7878`** di browser untuk membuka **Pachinko Studio**!
 
 ---
 

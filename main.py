@@ -1,4 +1,4 @@
-"""Entrypoint Utama Miyoria-Py: Menjalankan Core, Web Admin Panel (:7878), Singing, & Discord Bot dalam satu proses."""
+"""Entrypoint Utama Pachinko: Menjalankan Core, Web Admin Panel (:7878), Singing, & Discord Bot dalam satu proses."""
 from __future__ import annotations
 
 import asyncio
@@ -15,9 +15,9 @@ from brain.profile import ProfileManager
 from brain.runner import BrainRunner
 from brain.tools import ToolBox
 from brain.triage import TriageEngine
-from config import config
+from config import DATA_DIR, config
 from core.bus import Event, EventBus
-from core.store import Store
+from core.store import Store, migrate_legacy_db
 from discord_bot.client import build_discord_bot
 from heart.engine import HeartEngine
 from memory.manager import MemoryManager
@@ -31,10 +31,11 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-log = logging.getLogger("miyoria")
+log = logging.getLogger("pachinko")
 
 
 async def run_all() -> None:
+    migrate_legacy_db(config.db_path, DATA_DIR)
     store = Store(config.db_path)
     await store.init()
 
@@ -156,5 +157,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(run_all())
     except KeyboardInterrupt:
-        print("\nMiyoria-Py dihentikan dengan aman.")
+        print("\nPachinko dihentikan dengan aman.")
         sys.exit(0)

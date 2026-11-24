@@ -161,7 +161,7 @@ class ToolBox:
             return "URL tidak valid."
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 MiyoriaReader/1.0"})
+                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 PachinkoReader/1.0"})
                 raw = re.sub(r"<(script|style).*?>.*?</\1>", " ", r.text, flags=re.S | re.I)
                 text = html.unescape(re.sub(r"<[^>]+>", " ", raw))
                 text = re.sub(r"\s+", " ", text).strip()

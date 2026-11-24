@@ -11,8 +11,8 @@ from brain.prompt import _VOICE_EXTRA_RULES, assemble_messages
 def _make_profile() -> CharacterProfile:
     return CharacterProfile(
         profile_id="test",
-        display_name="Aira",
-        nicknames=["aira"],
+        display_name="Pachinko",
+        nicknames=["pachinko"],
         wake_aliases={},
         language="id",
         interests=["musik"],
@@ -22,17 +22,17 @@ def _make_profile() -> CharacterProfile:
         filler_phrases=["Hmm?"],
         backchannel_words={"hmm", "iya"},
         voice_cfg={},
-        identity_md="Kamu adalah Aira, AI yang ekspresif.",
+        identity_md="Kamu adalah Pachinko, AI yang ekspresif.",
         style_md="Gaya bicara santai dan hangat.",
-        examples_md="User: Halo\nAira: Hai juga!",
+        examples_md="User: Halo\nPachinko: Hai juga!",
         lore_entries=[
-            {"keywords": ["kopi"], "content": "Aira suka kopi susu.", "priority": 2, "scope": "both"}
+            {"keywords": ["kopi"], "content": "Pachinko suka kopi susu.", "priority": 2, "scope": "both"}
         ],
         kaomoji={"happy": ["(≧▽≦)", "(^‿^)"]},
     )
 
 
-def _make_args(modality: str = "text", user_text: str = "Halo Aira, lagi minum kopi ya?") -> dict:
+def _make_args(modality: str = "text", user_text: str = "Halo Pachinko, lagi minum kopi ya?") -> dict:
     return {
         "profile": _make_profile(),
         "directives": "Selalu jawab singkat.",
@@ -41,7 +41,7 @@ def _make_args(modality: str = "text", user_text: str = "Halo Aira, lagi minum k
         "person_notes": [{"fact": "Suka main game"}],
         "recalled_memories": [{"content": "Kemarin bahas musik"}],
         "history": [
-            {"role": "user", "speaker_name": "Budi", "content": "Pagi Aira!"},
+            {"role": "user", "speaker_name": "Budi", "content": "Pagi Pachinko!"},
             {"role": "assistant", "content": "Pagi juga Budi!", "interrupted": False},
         ],
         "speaker_name": "Budi",
@@ -66,7 +66,7 @@ class TestAssembleMessages(unittest.TestCase):
         msgs = assemble_messages(**_make_args(modality="text"))
         self._assert_strict_roles(msgs)
 
-        self.assertIn("Kamu adalah Aira", msgs[0]["content"])
+        self.assertIn("Kamu adalah Pachinko", msgs[0]["content"])
         self.assertIn("Gaya bicara santai", msgs[0]["content"])
         self.assertIn("User: Halo", msgs[0]["content"])
         self.assertIn("Selalu jawab singkat.", msgs[0]["content"])
@@ -74,7 +74,7 @@ class TestAssembleMessages(unittest.TestCase):
         all_text = "\n".join(m["content"] for m in msgs)
         self.assertIn("Suka main game", all_text)
         self.assertIn("Kemarin bahas musik", all_text)
-        self.assertIn("Pagi Aira!", all_text)
+        self.assertIn("Pagi Pachinko!", all_text)
         self.assertIn("Pagi juga Budi!", all_text)
 
         final_user = msgs[-1]
@@ -82,9 +82,9 @@ class TestAssembleMessages(unittest.TestCase):
         content = final_user["content"]
         for tag in ("<now>", "<style_note>", "<turn "):
             self.assertIn(tag, content)
-        self.assertIn("Aira suka kopi susu.", content)
-        self.assertIn("Halo Aira, lagi minum kopi ya?", content)
-        self.assertLess(content.index("<turn "), content.index("Halo Aira, lagi minum kopi ya?"))
+        self.assertIn("Pachinko suka kopi susu.", content)
+        self.assertIn("Halo Pachinko, lagi minum kopi ya?", content)
+        self.assertLess(content.index("<turn "), content.index("Halo Pachinko, lagi minum kopi ya?"))
 
     def test_voice_turn_strict_roles_and_content(self) -> None:
         msgs = assemble_messages(**_make_args(modality="voice"))
@@ -94,8 +94,8 @@ class TestAssembleMessages(unittest.TestCase):
         self.assertEqual(final_user["role"], "user")
         content = final_user["content"]
         self.assertIn(_VOICE_EXTRA_RULES, content)
-        self.assertIn("Halo Aira, lagi minum kopi ya?", content)
-        self.assertLess(content.index("<style_note>"), content.index("Halo Aira, lagi minum kopi ya?"))
+        self.assertIn("Halo Pachinko, lagi minum kopi ya?", content)
+        self.assertLess(content.index("<style_note>"), content.index("Halo Pachinko, lagi minum kopi ya?"))
 
     def test_system_message_byte_identical_between_turns(self) -> None:
         args1 = _make_args(modality="text", user_text="Halo")

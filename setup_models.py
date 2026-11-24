@@ -11,7 +11,7 @@ from speech.tts import TTSEngine
 
 
 async def main() -> None:
-    print("=== Miyoria-Py Local Doctor (Windows + AMD RX 9070 16GB) ===\n")
+    print("=== Pachinko Local Doctor (Windows + AMD RX 9070 16GB) ===\n")
 
     ffmpeg_ok = shutil.which("ffmpeg") is not None
     print(f"[{'OK' if ffmpeg_ok else '!!'}] FFmpeg pada PATH: {'Ditemukan' if ffmpeg_ok else 'BELUM TERINSTALL (winget install Gyan.FFmpeg)'}")

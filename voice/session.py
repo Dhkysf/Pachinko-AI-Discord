@@ -1,4 +1,4 @@
-"""Natural Voice Session ala Miyoria (Streaming Kalimat + Prefetch TTS + Filler + Two-Stage Smart Barge-In).
+"""Natural Voice Session Pachinko (Streaming Kalimat + Prefetch TTS + Filler + Two-Stage Smart Barge-In).
 
 Fitur unggulan:
 1. `ExpressivePCMSource`: Memutar raw PCM 48kHz stereo 20ms per frame dengan:

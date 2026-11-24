@@ -2,11 +2,40 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+LEGACY_DB_NAME = "miyoria.db"
+_log = logging.getLogger("core.store")
+
+
+def migrate_legacy_db(db_path: Path, default_dir: Path) -> bool:
+    """Rename legacy data/miyoria.db (plus -wal/-shm) to data/pachinko.db once if needed."""
+    target = default_dir / "pachinko.db"
+    legacy = default_dir / LEGACY_DB_NAME
+    if db_path.resolve() != target.resolve() or target.exists() or not legacy.exists():
+        return False
+
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            src = Path(f"{legacy}{suffix}")
+            if src.exists():
+                dst = Path(f"{target}{suffix}")
+                src.replace(dst)
+                moved.append((src, dst))
+    except OSError:
+        for src, dst in reversed(moved):
+            if dst.exists() and not src.exists():
+                dst.replace(src)
+        raise
+
+    _log.info("Migrated legacy database %s -> %s", legacy, target)
+    return True
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;

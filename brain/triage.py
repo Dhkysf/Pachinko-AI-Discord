@@ -37,7 +37,7 @@ class TriageEngine:
         self._ambient_history: dict[str, deque[float]] = {}
 
     def normalize_wake_words(self, text: str, profile: CharacterProfile) -> str:
-        """Perbaiki salah dengar STT pada nama panggilan (misal 'Era' -> 'Aira')."""
+        """Perbaiki salah dengar STT pada nama panggilan (misal 'Pacinko' -> 'Pachinko')."""
         out = text
         for wrong, right in profile.wake_aliases.items():
             out = re.sub(rf"\b{re.escape(wrong)}\b", right, out, flags=re.IGNORECASE)

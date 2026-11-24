@@ -39,7 +39,7 @@ def create_web_app(
     economy: EconomyAndPlay,
     tts: TTSEngine,
 ) -> FastAPI:
-    app = FastAPI(title="Miyoria-Py Control Studio", docs_url="/api/docs")
+    app = FastAPI(title="Pachinko Studio", docs_url="/api/docs")
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     def _check_auth(req: Request) -> None:

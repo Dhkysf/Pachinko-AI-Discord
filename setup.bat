@@ -1,9 +1,9 @@
 @echo off
-title Miyoria-Py Setup (Windows + AMD RX 9070 16GB)
+title Pachinko Setup (Windows + AMD RX 9070 16GB)
 cd /d "%~dp0"
 
 echo ==============================================================
-echo   Miyoria-Py Setup - Autonomous Discord Voice ^& Chat Core
+echo   Pachinko Setup - Autonomous Discord Voice ^& Chat Core
 echo ==============================================================
 echo.
 
