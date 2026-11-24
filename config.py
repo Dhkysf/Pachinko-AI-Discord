@@ -115,17 +115,10 @@ class AppConfig:
     mind_loop_interval_sec: int = field(default_factory=lambda: _int("MIND_LOOP_INTERVAL_SEC", 45))
     max_history_turns: int = field(default_factory=lambda: _int("MAX_HISTORY_TURNS", 24))
 
-    # --- Web Admin Panel & OBS Overlay ---
+    # --- Web Admin Panel ---
     panel_host: str = field(default_factory=lambda: os.getenv("PANEL_HOST", "127.0.0.1"))
     panel_port: int = field(default_factory=lambda: _int("PANEL_PORT", 7878))
     panel_token: str = field(default_factory=lambda: os.getenv("PANEL_TOKEN", "").strip())
-
-    # --- VTuber Stage (VTube Studio & OBS) ---
-    vts_enabled: bool = field(default_factory=lambda: _bool("VTS_ENABLED", False))
-    vts_ws_url: str = field(default_factory=lambda: os.getenv("VTS_WS_URL", "ws://127.0.0.1:8001"))
-    obs_enabled: bool = field(default_factory=lambda: _bool("OBS_ENABLED", False))
-    obs_ws_url: str = field(default_factory=lambda: os.getenv("OBS_WS_URL", "ws://127.0.0.1:4455"))
-    obs_ws_password: str = field(default_factory=lambda: os.getenv("OBS_WS_PASSWORD", ""))
 
     # --- GPU VRAM Budget (RX 9070 = 16 GB) ---
     gpu_vram_gb: int = field(default_factory=lambda: _int("GPU_VRAM_GB", 16))

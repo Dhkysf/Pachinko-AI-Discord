@@ -1,11 +1,10 @@
-"""Natural Voice Session ala Miyoria (Streaming Kalimat + Prefetch TTS + Filler + Two-Stage Smart Barge-In + Lip-Sync).
+"""Natural Voice Session ala Miyoria (Streaming Kalimat + Prefetch TTS + Filler + Two-Stage Smart Barge-In).
 
 Fitur unggulan:
 1. `ExpressivePCMSource`: Memutar raw PCM 48kHz stereo 20ms per frame dengan:
    - Volume ducking halus (`0.28x`) saat orang lain bicara di samping.
    - Pause & Resume instan saat lawan bicara fokus bersuara (jika cuma gumaman "hmm/oke", lanjut bicara tanpa hilang kata!).
    - Penghitung persentase kalimat yang sudah terdengar (`heard_ratio`) jika benar-benar dipotong (barge-in).
-   - Analisis RMS + 3 pita frekuensi vokal tiap 40ms untuk menggerakkan mulut Live2D VTube Studio & voice bar OBS Overlay!
 2. `LinePrefetch`: Kalimat 1 langsung bicara begitu keluar dari LLM sementara kalimat 2 & 3 disintesis di latar belakang.
 """
 from __future__ import annotations
@@ -15,7 +14,6 @@ import logging
 import random
 import re
 import time
-from typing import Callable, Awaitable
 
 import discord
 import numpy as np
@@ -36,14 +34,9 @@ FRAME_BYTES = 3840  # 20ms @ 48kHz stereo int16
 
 
 class ExpressivePCMSource(discord.AudioSource):
-    """AudioSource PCM yang mendukung Ducking, Pause/Resume tanpa potong, rasio kata terdengar, & Lip-Sync."""
+    """AudioSource PCM yang mendukung Ducking, Pause/Resume tanpa potong, & rasio kata terdengar."""
 
-    def __init__(
-        self,
-        pcm_data: bytes,
-        text: str,
-        on_lipsync: Callable[[float, float, float], None] | None = None,
-    ) -> None:
+    def __init__(self, pcm_data: bytes, text: str) -> None:
         # Ratakan ke kelipatan 3840 byte
         rem = len(pcm_data) % FRAME_BYTES
         if rem:
@@ -55,8 +48,6 @@ class ExpressivePCMSource(discord.AudioSource):
         self.stopped = False
         self.gain = 1.0
         self._target_gain = 1.0
-        self._frame_idx = 0
-        self._on_lipsync = on_lipsync
 
     def set_duck(self, ducked: bool) -> None:
         self._target_gain = 0.28 if ducked else 1.0
@@ -85,18 +76,13 @@ class ExpressivePCMSource(discord.AudioSource):
 
     def read(self) -> bytes:
         if self.stopped or self.pos >= len(self.pcm):
-            if self._on_lipsync:
-                self._on_lipsync(0.0, 0.0, 0.0)
             return b""
 
         if self.paused:
-            if self._on_lipsync:
-                self._on_lipsync(0.0, 0.0, 0.0)
             return bytes(FRAME_BYTES)
 
         chunk = self.pcm[self.pos : self.pos + FRAME_BYTES]
         self.pos += FRAME_BYTES
-        self._frame_idx += 1
 
         # Smooth gain ramp
         if abs(self.gain - self._target_gain) > 0.02:
@@ -104,19 +90,10 @@ class ExpressivePCMSource(discord.AudioSource):
         else:
             self.gain = self._target_gain
 
-        samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
         if abs(self.gain - 1.0) > 0.01:
+            samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
             scaled = np.clip(samples * self.gain, -32768, 32767).astype(np.int16)
             chunk = scaled.tobytes()
-
-        # Kirim telemetri mulut setiap 2 frame (40ms = 25 fps)
-        if self._on_lipsync and self._frame_idx % 2 == 0 and samples.size:
-            mono = samples.reshape(-1, 2).mean(axis=1) / 32768.0
-            rms = min(1.0, float(np.sqrt(np.mean(mono ** 2))) * 4.2)
-            spec = np.abs(np.fft.rfft(mono))
-            low = min(1.0, float(np.mean(spec[4:16])) * 0.35) if spec.size > 16 else rms
-            high = min(1.0, float(np.mean(spec[16:48])) * 0.45) if spec.size > 48 else rms * 0.5
-            self._on_lipsync(round(rms, 3), round(low, 3), round(high, 3))
 
         return chunk
 
@@ -361,7 +338,6 @@ class NaturalVoiceSession:
                     break
 
                 self.stt.echo_guard.record_bot_speech(sentence)
-                await self.bus.emit("overlay.subtitle", speaker=prof.display_name, text=sentence, emotion=emo)
                 completed = await self.play_raw_pcm(pcm, sentence)
                 if completed:
                     self._spoken_so_far.append(sentence)
@@ -394,13 +370,7 @@ class NaturalVoiceSession:
                 return False
             await asyncio.sleep(0.03)
 
-        def _lipsync_cb(rms: float, low: float, high: float) -> None:
-            asyncio.run_coroutine_threadsafe(
-                self.bus.emit("stage.lipsync", rms=rms, vowel_open=low, vowel_wide=high),
-                self.loop,
-            )
-
-        src = ExpressivePCMSource(pcm, text, on_lipsync=_lipsync_cb)
+        src = ExpressivePCMSource(pcm, text)
         if not is_filler:
             self._current_source = src
         done = asyncio.Event()
@@ -423,7 +393,6 @@ class NaturalVoiceSession:
             collected.append(sentence)
             pcm = await self.tts.synthesize_pcm(sentence, emotion=emo)
             self.stt.echo_guard.record_bot_speech(sentence)
-            await self.bus.emit("overlay.subtitle", speaker=self.profiles.current.display_name, text=sentence, emotion=emo)
             await self.play_raw_pcm(pcm, sentence)
         return " ".join(collected)
 

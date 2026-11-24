@@ -1,4 +1,4 @@
-"""Entrypoint Utama Miyoria-Py: Menjalankan Core, Web Admin Panel (:7878), Stage, Singing, & Discord Bot dalam satu proses."""
+"""Entrypoint Utama Miyoria-Py: Menjalankan Core, Web Admin Panel (:7878), Singing, & Discord Bot dalam satu proses."""
 from __future__ import annotations
 
 import asyncio
@@ -25,7 +25,6 @@ from play.economy import EconomyAndPlay
 from sing.engine import SingingEngine
 from speech.stt import STTEngine
 from speech.tts import TTSEngine
-from stage.bridge import StageBridge
 from web.server import create_web_app
 
 logging.basicConfig(
@@ -75,8 +74,6 @@ async def run_all() -> None:
     stt = STTEngine()
     tts = TTSEngine()
     economy = EconomyAndPlay(store, bus, heart)
-    stage = StageBridge(store, bus)
-    await stage.start()
 
     web_app = create_web_app(
         store=store,
@@ -88,7 +85,6 @@ async def run_all() -> None:
         brain=brain,
         singing=singing,
         economy=economy,
-        stage=stage,
         tts=tts,
     )
 
@@ -101,7 +97,6 @@ async def run_all() -> None:
     uvi_server = uvicorn.Server(uvi_cfg)
     web_task = asyncio.create_task(uvi_server.serve())
     log.info("🌐 Web Admin Panel aktif di: http://%s:%d", config.panel_host, config.panel_port)
-    log.info("📺 OBS Browser Overlay siap di: http://%s:%d/overlay", config.panel_host, config.panel_port)
 
     try:
         if not config.discord_token:
@@ -122,7 +117,6 @@ async def run_all() -> None:
             tts=tts,
             singing=singing,
             economy=economy,
-            stage=stage,
             enable_message_content=True,
         )
         try:
@@ -147,14 +141,12 @@ async def run_all() -> None:
                 tts=tts,
                 singing=singing,
                 economy=economy,
-                stage=stage,
                 enable_message_content=False,
             )
             await bot2.start(config.discord_token)
     finally:
         uvi_server.should_exit = True
         await singing.stop()
-        await stage.stop()
         await tts.close()
         await llm.close()
         await store.close()

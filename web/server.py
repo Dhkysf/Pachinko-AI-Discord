@@ -1,4 +1,4 @@
-"""FastAPI Server untuk Web Admin Panel (`http://127.0.0.1:7878`) & OBS Browser Overlay (`/overlay`)."""
+"""FastAPI Server untuk Web Admin Panel (`http://127.0.0.1:7878`)."""
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +22,6 @@ from memory.manager import MemoryManager
 from play.economy import EconomyAndPlay
 from sing.engine import SingingEngine
 from speech.tts import TTSEngine
-from stage.bridge import StageBridge
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -38,7 +37,6 @@ def create_web_app(
     brain: BrainRunner,
     singing: SingingEngine,
     economy: EconomyAndPlay,
-    stage: StageBridge,
     tts: TTSEngine,
 ) -> FastAPI:
     app = FastAPI(title="Miyoria-Py Control Studio", docs_url="/api/docs")
@@ -54,10 +52,6 @@ def create_web_app(
     @app.get("/")
     async def index():
         return FileResponse(str(STATIC_DIR / "index.html"))
-
-    @app.get("/overlay")
-    async def overlay_page():
-        return FileResponse(str(STATIC_DIR / "overlay.html"))
 
     @app.get("/api/status")
     async def api_status(req: Request):
@@ -86,7 +80,6 @@ def create_web_app(
                 "gpu_vram_gb": config.gpu_vram_gb,
                 "vram_busy_with": vram_guard.busy_with,
             },
-            "stage": stage.status(),
             "singing": singing.snapshot(),
         }
 

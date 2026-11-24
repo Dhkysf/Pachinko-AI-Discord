@@ -7,7 +7,7 @@ Mendukung:
 3. `elevenlabs` : Opsional bila user mengisi API key + Voice ID.
 + Opsional Post-Processing RVC Lokal (`RVC_ENABLED=true`) untuk mengubah warna suara ke model karakter `.pth`/`.onnx`.
 
-Semua output dikonversi menjadi **PCM 48kHz Stereo s16le** agar siap diputar dengan kontrol pause/duck/lip-sync real-time.
+Semua output dikonversi menjadi **PCM 48kHz Stereo s16le** agar siap diputar dengan kontrol pause/duck real-time.
 """
 from __future__ import annotations
 

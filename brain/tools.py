@@ -1,4 +1,4 @@
-"""Daftar Tool Aman yang bisa dipanggil oleh Otak Karakter (Web Search, Baca Web, Catat Memori, Pengingat, Lagu, Stage)."""
+"""Daftar Tool Aman yang bisa dipanggil oleh Otak Karakter (Web Search, Baca Web, Catat Memori, Pengingat, Lagu)."""
 from __future__ import annotations
 
 import asyncio

@@ -2,7 +2,7 @@
 py-cord[voice] @ git+https://github.com/Pycord-Development/pycord@refs/pull/3159/head
 davey>=0.1.6
 
-# Core, Database, & Web Admin Panel + OBS Overlay
+# Core, Database, & Web Admin Panel
 python-dotenv
 httpx
 numpy

@@ -25,7 +25,7 @@ const HEADINGS = {
   persona: 'Studio Persona, Lorebook & Playground',
   bonds: 'Hubungan Sosial & Bond Ladder',
   memory: 'Memori Hibrida & Living Notebook',
-  voice: 'Konfigurasi Suara, Karaoke & VTuber Stage',
+  voice: 'Konfigurasi Suara & Karaoke',
 };
 
 $$('.nav-btn').forEach((btn) => {
@@ -103,12 +103,6 @@ async function loadStatus() {
   $('#sing-queue-box').innerHTML = qLines.length
     ? qLines.map((l) => `<div class="event-item"><span class="event-body">${l}</span></div>`).join('')
     : '<div style="color:var(--text-muted)">Antrean kosong.</div>';
-
-  $('#stage-status-box').innerHTML = `
-    VTube Studio Live2D: <strong>${s.stage.vts_connected ? 'Terhubung' : (s.stage.vts_enabled ? 'Menunggu aplikasi...' : 'Nonaktif di .env')}</strong><br>
-    OBS Studio WebSocket: <strong>${s.stage.obs_connected ? 'Terhubung' : (s.stage.obs_enabled ? 'Menunggu OBS...' : 'Nonaktif di .env')}</strong><br>
-    Scene Aktif: <strong>${s.stage.scene}</strong> · Ekspresi Wajah: <strong>${s.stage.emotion}</strong>
-  `;
 }
 
 async function loadPersona() {
@@ -274,9 +268,7 @@ function connectWS() {
   };
   ws.onmessage = (e) => {
     const ev = JSON.parse(e.data);
-    if (ev.topic !== 'stage.lipsync') {
-      appendEvent(ev);
-    }
+    appendEvent(ev);
     if (ev.topic.startsWith('heart.') || ev.topic.startsWith('sing.') || ev.topic === 'runtime.updated') {
       loadStatus();
     }

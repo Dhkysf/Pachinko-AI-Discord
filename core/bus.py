@@ -1,7 +1,7 @@
 """EventBus asinkron untuk menghubungkan semua modul secara longgar (decoupled).
 
-Semua kejadian penting (chat, voice, emosi berubah, bond naik, keputusan otak,
-lirik karaoke, lip-sync) lewat di sini dan otomatis disiarkan ke Web Panel & OBS Overlay.
+Semua kejadian penting (chat, voice, emosi berubah, bond naik, keputusan otak)
+lewat di sini dan otomatis disiarkan ke Web Panel.
 """
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class EventBus:
         ev = Event(id=uuid.uuid4().hex[:16], topic=topic, ts=time.time(), payload=payload)
         self._recent.append(ev)
 
-        if self._persist_hook and not topic.startswith("stage.lipsync"):
+        if self._persist_hook:
             try:
                 await self._persist_hook(ev)
             except Exception:

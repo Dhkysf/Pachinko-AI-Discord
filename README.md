@@ -1,4 +1,4 @@
-# Miyoria-Py — Autonomous Discord Voice & VTuber Character Core
+# Miyoria-Py — Autonomous Discord Voice & Chat Companion
 
 Implementasi ulang *clean-room* berbahasa Python penuh yang terinspirasi dari arsitektur V5 Miyoria—dirancang khusus supaya mudah diedit di VS Code pada **Windows 11 + GPU AMD Radeon RX 9070 (16 GB VRAM)** dan 100% aman untuk akun Discord (memakai **Official Bot Token + DAVE E2EE**).
 
@@ -25,17 +25,13 @@ Implementasi ulang *clean-room* berbahasa Python penuh yang terinspirasi dari ar
    - **Cached Filler** (*"Hmm?"*, *"Eh, bentar..."*) + **SelfEchoGuard** (anti-feedback bocoran speaker).
    - **Two-Stage Smart Barge-In**: Membedakan gumaman pendek (*"hmm"*, *"iya"*, *"oke"*) vs interupsi sungguhan (bisa *ducking* 28%, *pause*, lalu *resume* tanpa putus!).
 
-5. **Web Admin Panel & OBS Stream Overlay (`web/`)**
+5. **Web Admin Panel (`web/`)**
    - **Admin Studio (`http://127.0.0.1:7878`)**: Monitor emosi live, aliran event WebSocket, editor Persona & Lorebook *hot-reload*, Sandbox Playground chat, penjelajah Bond member, Notebook, & kontrol mesin AI.
-   - **OBS Browser Overlay (`http://127.0.0.1:7878/overlay`)**: Latar transparan, *voice bar* reaktif 25 FPS, *typewriter subtitle*, & lirik karaoke tersinkronisasi!
 
-6. **VTuber Stage (`stage/`)**
-   - Klien WebSocket **VTube Studio** (`ws://127.0.0.1:8001`) untuk *lip-sync* mulut real-time + ekspresi hotkey + ayunan kepala idle, serta **OBS Studio WebSocket v5** (`ws://127.0.0.1:4455`).
+6. **AI Singing / Karaoke + Koordinator VRAM RX 9070 (`sing/`, `core/vram.py`)**
+   - Request lagu dari YouTube (`/sing`), mengosongkan VRAM Ollama sementara (`keep_alive: 0`) bila mode AI Cover RVC aktif, dan memutar lagu di voice channel Discord.
 
-7. **AI Singing / Karaoke + Koordinator VRAM RX 9070 (`sing/`, `core/vram.py`)**
-   - Request lagu dari YouTube (`/sing`), otomatis mengambil lirik sinkron `.lrc` (LRCLIB), mengosongkan VRAM Ollama sementara (`keep_alive: 0`) bila mode AI Cover RVC aktif, dan menyiarkan lirik ke OBS Overlay.
-
-8. **Play & Economy (`play/`)**
+7. **Play & Economy (`play/`)**
    - Dompet koin (`/daily` streak + ramalan, `/gift` penambah Bond, `/card` gacha kartu koleksi SVG, & `/trivia` mini-game).
 
 ---

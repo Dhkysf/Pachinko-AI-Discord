@@ -23,7 +23,6 @@ from play.economy import EconomyAndPlay, render_card_svg
 from sing.engine import SingingEngine
 from speech.stt import STTEngine
 from speech.tts import TTSEngine
-from stage.bridge import StageBridge
 from voice.session import NaturalVoiceSession
 
 log = logging.getLogger("discord_bot")
@@ -46,7 +45,6 @@ def build_discord_bot(
     tts: TTSEngine,
     singing: SingingEngine,
     economy: EconomyAndPlay,
-    stage: StageBridge,
     enable_message_content: bool = True,
 ) -> discord.Bot:
     intents = discord.Intents.default()

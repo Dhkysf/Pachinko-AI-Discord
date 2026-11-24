@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Panel Kontrol Karakter AI Voice & VTuber Lokal Miyoria-Py">
+  <meta name="description" content="Panel Kontrol Karakter AI Voice Lokal Miyoria-Py">
   <title>Miyoria-Py Control Studio</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -24,7 +24,7 @@
           <li><button id="nav-persona" class="nav-btn" data-tab="persona">Persona & Playground</button></li>
           <li><button id="nav-bonds" class="nav-btn" data-tab="bonds">Hubungan & Bond</button></li>
           <li><button id="nav-memory" class="nav-btn" data-tab="memory">Memori & Notebook</button></li>
-          <li><button id="nav-voice" class="nav-btn" data-tab="voice">Suara, Lagu & Stage</button></li>
+          <li><button id="nav-voice" class="nav-btn" data-tab="voice">Suara & Lagu</button></li>
         </ul>
       </nav>
 
@@ -36,9 +36,6 @@
         <div class="status-line">
           <span>GPU Target</span>
           <span id="gpu-label">RX 9070 16GB</span>
-        </div>
-        <div style="margin-top:8px;">
-          <a href="/overlay" target="_blank" class="btn" style="width:100%; font-size:0.78rem;">Buka OBS Overlay ↗</a>
         </div>
       </div>
     </aside>
@@ -167,7 +164,7 @@
         </div>
       </section>
 
-      <!-- TAB 5: VOICE, SINGING & STAGE -->
+      <!-- TAB 5: VOICE & SINGING -->
       <section id="tab-voice" class="tab-panel">
         <div class="grid-2">
           <div class="panel-box">
@@ -198,16 +195,13 @@
           </div>
 
           <div class="panel-box">
-            <h2>Antrean Karaoke / AI Singing & Stage</h2>
+            <h2>Antrean Karaoke / AI Singing</h2>
             <div style="display:flex; gap:8px; margin-bottom:12px;">
               <input type="text" id="inp-song-query" placeholder="Judul lagu atau URL YouTube...">
               <button id="btn-song-add" class="btn btn-primary">Antrekan</button>
               <button id="btn-song-skip" class="btn btn-danger">Skip</button>
             </div>
             <div id="sing-queue-box" class="event-log" style="height:170px;"></div>
-
-            <h2 style="margin-top:20px;">Status VTuber Stage</h2>
-            <div id="stage-status-box" style="font-size:0.88rem; color:var(--text-secondary);"></div>
           </div>
         </div>
       </section>

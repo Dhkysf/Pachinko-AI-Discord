@@ -1,25 +1,22 @@
-"""AI Singing & Karaoke Engine (terintegrasi Koordinator VRAM RX 9070 16GB + Lirik Sinkron LRCLIB).
+"""AI Singing Engine (terintegrasi Koordinator VRAM RX 9070 16GB).
 
 Cara kerja:
 1. User request lagu lewat `/sing <judul/URL YouTube>` atau lewat obrolan suara (`queue_song`).
 2. Mengunduh audio menggunakan `yt-dlp` ke cache `data/songs/`.
-3. Mencari lirik tersinkronisasi waktu (`.lrc`) secara otomatis dari LRCLIB (`lrclib.net`).
-4. Meminjam VRAM eksklusif lewat `vram_guard.lease_heavy_gpu("singing")` (melepas Ollama dari VRAM RX 9070):
+3. Meminjam VRAM eksklusif lewat `vram_guard.lease_heavy_gpu("singing")` (melepas Ollama dari VRAM RX 9070):
    - Jika `RVC_ENABLED=true` dan `audio-separator` tersedia, memisahkan vokal (DirectML GPU) -> konversi suara RVC -> mixing ulang bersama instrumen pada -16 LUFS!
-   - Jika RVC belum diaktifkan, otomatis memutar lagu dalam mode Live Karaoke + Lip-Sync reaktif + Lirik berjalan di OBS Overlay & Discord!
+   - Jika RVC belum diaktifkan, otomatis memutar lagu langsung di voice channel Discord!
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import logging
-import re
 import subprocess
-import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable
 
 import httpx
 
@@ -32,8 +29,6 @@ log = logging.getLogger("sing")
 
 SONGS_DIR = DATA_DIR / "songs"
 SONGS_DIR.mkdir(parents=True, exist_ok=True)
-
-_LRC_LINE_RE = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)")
 
 
 @dataclass
@@ -48,25 +43,11 @@ class SongItem:
     cover_mode: bool = False
 
 
-def parse_lrc(lrc_text: str) -> list[tuple[float, str]]:
-    lines: list[tuple[float, str]] = []
-    for raw in lrc_text.splitlines():
-        m = _LRC_LINE_RE.match(raw.strip())
-        if m:
-            sec = int(m.group(1)) * 60 + float(m.group(2))
-            lyric = m.group(3).strip()
-            if lyric:
-                lines.append((sec, lyric))
-    lines.sort(key=lambda x: x[0])
-    return lines
-
-
 class SingingEngine:
     def __init__(self, bus: EventBus) -> None:
         self.bus = bus
         self.queue: list[SongItem] = []
         self.current: SongItem | None = None
-        self._skip_event = asyncio.Event()
         self._session_getter: Callable[[str], Any] | None = None
         self._worker_task: asyncio.Task | None = None
         self._http = httpx.AsyncClient(timeout=20.0)
@@ -85,7 +66,6 @@ class SingingEngine:
 
     def skip_current(self) -> bool:
         if self.current:
-            self._skip_event.set()
             session = self._session_getter(self.current.room_id) if self._session_getter else None
             if session and session._current_source:
                 session._current_source.stop_now()
@@ -118,7 +98,6 @@ class SingingEngine:
                 continue
             item = self.queue.pop(0)
             self.current = item
-            self._skip_event.clear()
             try:
                 await self._perform_song(item)
             except asyncio.CancelledError:
@@ -142,7 +121,6 @@ class SingingEngine:
 
         title, audio_file = await self._download_song(item.query)
         item.title = title
-        lrc_lines = await self._fetch_lyrics(title)
 
         if config.rvc_enabled:
             async with vram_guard.lease_heavy_gpu(f"sing:{title[:24]}"):
@@ -151,16 +129,13 @@ class SingingEngine:
         pcm = await asyncio.to_thread(audio_bytes_to_pcm48k, audio_file.read_bytes(), audio_file.suffix.lstrip("."))
         item.status = "playing"
         session.singing_active = True
-        await self.bus.emit("sing.started", id=item.id, title=title, requester=item.requester_name, has_lyrics=bool(lrc_lines))
+        await self.bus.emit("sing.started", id=item.id, title=title, requester=item.requester_name)
 
-        lyric_task = asyncio.create_task(self._broadcast_synced_lyrics(title, lrc_lines))
         try:
             await session.play_raw_pcm(pcm, f"♪ {title}", is_filler=False)
             item.status = "done"
         finally:
             session.singing_active = False
-            lyric_task.cancel()
-            await self.bus.emit("overlay.karaoke", title="", line="", next_line="")
 
     async def _download_song(self, query: str) -> tuple[str, Path]:
         slug = hashlib.md5(query.lower().encode()).hexdigest()[:12]
@@ -193,33 +168,6 @@ class SingingEngine:
             return title_str, downloaded
 
         return await asyncio.to_thread(_yt_sync)
-
-    async def _fetch_lyrics(self, title: str) -> list[tuple[float, str]]:
-        clean_title = re.sub(r"\(.*?\)|\[.*?\]|official|video|mv|lyrics", "", title, flags=re.I).strip()
-        try:
-            r = await self._http.get("https://lrclib.net/api/search", params={"q": clean_title})
-            if r.status_code == 200:
-                items = r.json()
-                for it in items:
-                    if it.get("syncedLyrics"):
-                        return parse_lrc(it["syncedLyrics"])
-        except Exception:
-            pass
-        return []
-
-    async def _broadcast_synced_lyrics(self, title: str, lines: list[tuple[float, str]]) -> None:
-        if not lines:
-            await self.bus.emit("overlay.karaoke", title=title, line=f"♪ {title} ♪", next_line="")
-            return
-        start = time.monotonic()
-        for idx, (ts_sec, line) in enumerate(lines):
-            if self._skip_event.is_set():
-                return
-            wait = ts_sec - (time.monotonic() - start)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            nxt = lines[idx + 1][1] if idx + 1 < len(lines) else ""
-            await self.bus.emit("overlay.karaoke", title=title, line=line, next_line=nxt)
 
     async def _try_rvc_cover_pipeline(self, source_audio: Path) -> Path:
         """Jika `audio-separator` + server RVC tersedia, pisahkan vokal & buat AI cover."""
@@ -261,5 +209,5 @@ class SingingEngine:
                 )
                 return cover_out
         except Exception as e:
-            log.info("Pipeline RVC penuh belum aktif (%s), lanjut memutar trek asli + lirik karaoke.", e)
+            log.info("Pipeline RVC penuh belum aktif (%s), lanjut memutar trek asli.", e)
         return source_audio

@@ -2,7 +2,7 @@
 
 Setiap aksi berdampak (tool call / inisiatif mandiri) melewati Gate:
 - `low`    : Jalan langsung (cari info, catat memori, ganti ekspresi).
-- `medium` : Dibatasi cooldown & cek izin privasi (pasang timer, antre lagu, pindah scene OBS).
+- `medium` : Dibatasi cooldown & cek izin privasi (pasang timer, antre lagu).
 - `high`   : Masuk antrean persetujuan Owner (bisa di-approve lewat Discord / Web Panel).
 """
 from __future__ import annotations
@@ -35,7 +35,6 @@ RISK_LEVELS = {
     "remember_note": "low",
     "set_reminder": "medium",
     "queue_song": "medium",
-    "switch_scene": "medium",
     "proactive_dm": "high",
 }
 

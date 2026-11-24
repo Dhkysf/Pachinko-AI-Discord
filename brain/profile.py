@@ -44,8 +44,8 @@ class CharacterProfile:
         hits.sort(key=lambda x: x[0], reverse=True)
         return [content for _, content in hits[:limit] if content]
 
-    def sample_kaomoji(self, stage_emotion: str, k: int = 3) -> list[str]:
-        pool = self.kaomoji.get(stage_emotion) or self.kaomoji.get("happy") or []
+    def sample_kaomoji(self, emotion: str, k: int = 3) -> list[str]:
+        pool = self.kaomoji.get(emotion) or self.kaomoji.get("happy") or []
         if not pool:
             return []
         return random.sample(pool, min(k, len(pool)))

@@ -156,12 +156,12 @@ class BrainRunner:
             clean, explicit_emo, feel_raw = extract_tags(raw)
             clean = _PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip()
             prof = self.profiles.current
-            stage_emo = await self.heart.apply_feel_block(
+            emotion = await self.heart.apply_feel_block(
                 feel_raw, explicit_emo, user_id, user_name, prof.temperament
             )
 
             if not clean:
-                return TurnResult(text="", emotion=stage_emo, silent=True)
+                return TurnResult(text="", emotion=emotion, silent=True)
 
             tid = await self.memory.add_transcript(
                 room_id=room_id,
@@ -170,10 +170,9 @@ class BrainRunner:
                 role="assistant",
                 modality="text",
                 content=clean,
-                emotion=stage_emo,
+                emotion=emotion,
             )
-            await self.bus.emit("stage.emotion", emotion=stage_emo, text=clean)
-            return TurnResult(text=clean, emotion=stage_emo, silent=False, transcript_id=tid)
+            return TurnResult(text=clean, emotion=emotion, silent=False, transcript_id=tid)
 
     async def stream_voice_turn(
         self,
@@ -215,7 +214,7 @@ class BrainRunner:
 
             buffer = ""
             full_raw = ""
-            current_emo = self.heart.dominant_stage_emotion(prof.temperament)
+            current_emo = self.heart.dominant_emotion(prof.temperament)
             in_feel = False
             emitted_sentences: list[str] = []
 
@@ -248,7 +247,7 @@ class BrainRunner:
 
             # Sisa buffer terakhir setelah stream selesai
             clean_tail, explicit_emo, feel_raw = extract_tags(full_raw)
-            stage_emo = await self.heart.apply_feel_block(
+            emotion = await self.heart.apply_feel_block(
                 feel_raw, explicit_emo or current_emo, user_id, user_name, prof.temperament
             )
 
@@ -256,7 +255,7 @@ class BrainRunner:
             spoken_tail, urls_tail = clean_for_speech(filter_outgoing(tail_rem))
             if len(spoken_tail) >= 2:
                 emitted_sentences.append(spoken_tail)
-                yield spoken_tail, stage_emo, urls_tail
+                yield spoken_tail, emotion, urls_tail
 
             if emitted_sentences:
                 joined = " ".join(emitted_sentences)
@@ -267,7 +266,6 @@ class BrainRunner:
                     role="assistant",
                     modality="voice",
                     content=joined,
-                    emotion=stage_emo,
+                    emotion=emotion,
                 )
                 self._last_voice_transcript_id = tid
-                await self.bus.emit("stage.emotion", emotion=stage_emo, text=joined)

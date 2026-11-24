@@ -22,8 +22,8 @@ EMOTION_KEYS = (
     "shy", "pride", "smug", "lonely", "curious", "grateful", "annoyed",
 )
 
-# Peta emosi internal -> ekspresi avatar/suara standar (9 ekspresi)
-EMOTION_TO_STAGE = {
+# Peta emosi internal -> ekspresi suara standar (9 ekspresi)
+EMOTION_TO_EXPRESSION = {
     "joy": "happy",
     "grateful": "happy",
     "pride": "smug",
@@ -126,7 +126,7 @@ class HeartEngine:
         act = self.emotions["surprise"] + self.emotions["anger"] + self.emotions["joy"] + self.emotions["shy"]
         self.arousal = max(0.0, min(1.0, round(0.25 + 0.55 * act, 3)))
 
-    def dominant_stage_emotion(self, temperament: str = "tsundere") -> str:
+    def dominant_emotion(self, temperament: str = "tsundere") -> str:
         self._apply_decay()
         best_k, best_v = max(self.emotions.items(), key=lambda kv: kv[1])
         if best_v < 0.15:
@@ -134,13 +134,13 @@ class HeartEngine:
         # Tsundere masking: kalau malu/senang tipis suka ditutup ekspresi smug
         if temperament == "tsundere" and best_k == "joy" and self.emotions["shy"] > 0.2:
             return "shy"
-        return EMOTION_TO_STAGE.get(best_k, "neutral")
+        return EMOTION_TO_EXPRESSION.get(best_k, "neutral")
 
     def state_summary(self, temperament: str = "tsundere") -> dict[str, Any]:
         self._apply_decay()
         active = {k: round(v, 2) for k, v in self.emotions.items() if v >= 0.08}
         return {
-            "dominant": self.dominant_stage_emotion(temperament),
+            "dominant": self.dominant_emotion(temperament),
             "valence": self.valence,
             "arousal": self.arousal,
             "energy": round(self.energy, 2),
@@ -222,8 +222,8 @@ class HeartEngine:
         self._apply_decay()
 
         if explicit_emo:
-            for k, stage_name in EMOTION_TO_STAGE.items():
-                if explicit_emo in (k, stage_name):
+            for k, expr_name in EMOTION_TO_EXPRESSION.items():
+                if explicit_emo in (k, expr_name):
                     self.emotions[k] = min(1.0, self.emotions[k] + 0.30)
                     break
 
@@ -242,9 +242,9 @@ class HeartEngine:
 
         self._recompute_mood()
         await self._save_self()
-        stage_emo = explicit_emo if explicit_emo in EMOTION_TO_STAGE.values() else self.dominant_stage_emotion(temperament)
+        emotion = explicit_emo if explicit_emo in EMOTION_TO_EXPRESSION.values() else self.dominant_emotion(temperament)
         await self.bus.emit("heart.updated", **self.state_summary(temperament))
-        return stage_emo
+        return emotion
 
     async def _apply_person_deltas(self, user_id: str, display_name: str, delta_spec: str) -> None:
         person = await self.get_person(user_id, display_name)

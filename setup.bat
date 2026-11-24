@@ -3,7 +3,7 @@ title Miyoria-Py Setup (Windows + AMD RX 9070 16GB)
 cd /d "%~dp0"
 
 echo ==============================================================
-echo   Miyoria-Py Setup - Autonomous Voice Character ^& VTuber Core
+echo   Miyoria-Py Setup - Autonomous Discord Voice ^& Chat Core
 echo ==============================================================
 echo.
 
