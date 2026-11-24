@@ -30,11 +30,12 @@ STATE_ALREADY_RUNNING = "Already running"
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-DEFAULT_SETTINGS: dict[str, bool] = {
+DEFAULT_SETTINGS: dict[str, Any] = {
     "start_bot_on_open": False,
     "start_with_windows": False,
     "auto_restart_on_crash": False,
     "minimize_to_tray_on_close": True,
+    "ollama_model": "",
 }
 
 _STATUS_MAP = {
@@ -55,6 +56,7 @@ class BotStatus:
     llm_ok: bool = False
     voice_sessions: int = 0
     exit_code: int | None = None
+    ollama_model: str = ""
 
 
 def format_uptime(seconds: int) -> str:
@@ -90,54 +92,82 @@ def tail_log_lines(log_path: Path, max_lines: int = 300, max_bytes: int = 131072
     return "\n".join(lines[-max_lines:])
 
 
-def load_settings(path: Path) -> dict[str, bool]:
+def load_settings(path: Path) -> dict[str, Any]:
     """Load app_settings.json merged over DEFAULT_SETTINGS."""
-    settings = dict(DEFAULT_SETTINGS)
+    settings: dict[str, Any] = dict(DEFAULT_SETTINGS)
     if not path.exists():
         return settings
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
-            for key in DEFAULT_SETTINGS:
+            for key, default in DEFAULT_SETTINGS.items():
                 if key in raw:
-                    settings[key] = bool(raw[key])
+                    if isinstance(default, bool):
+                        settings[key] = bool(raw[key])
+                    else:
+                        settings[key] = str(raw[key] or "").strip()
     except (OSError, ValueError, TypeError):
         pass
     return settings
 
 
-def save_settings(path: Path, settings: dict[str, bool]) -> None:
+def save_settings(path: Path, settings: dict[str, Any]) -> None:
     """Persist app_settings.json atomically."""
-    clean = {key: bool(settings.get(key, default)) for key, default in DEFAULT_SETTINGS.items()}
+    clean: dict[str, Any] = {}
+    for key, default in DEFAULT_SETTINGS.items():
+        val = settings.get(key, default)
+        clean[key] = bool(val) if isinstance(default, bool) else str(val or "").strip()
     atomic_write_json(path, clean)
+
+
+def read_env_summary(root_dir: Path) -> dict[str, Any]:
+    """Read non-secret .env summary (presence of DISCORD_TOKEN only, never its value)."""
+    env_path = root_dir / ".env"
+    summary: dict[str, Any] = {
+        "env_exists": env_path.exists(),
+        "has_discord_token": False,
+        "llm_provider": "ollama",
+        "ollama_base_url": "http://127.0.0.1:11434",
+        "ollama_model": "qwen3:8b",
+        "ollama_keep_alive": "15m",
+        "panel_host": "127.0.0.1",
+        "panel_port": 7878,
+    }
+    if not summary["env_exists"]:
+        return summary
+    try:
+        vals = dotenv_values(env_path)
+    except OSError:
+        return summary
+
+    summary["has_discord_token"] = bool((vals.get("DISCORD_TOKEN") or "").strip())
+    if (vals.get("LLM_PROVIDER") or "").strip():
+        summary["llm_provider"] = str(vals["LLM_PROVIDER"]).strip().lower()
+    if (vals.get("OLLAMA_BASE_URL") or "").strip():
+        summary["ollama_base_url"] = str(vals["OLLAMA_BASE_URL"]).strip()
+    if (vals.get("OLLAMA_MODEL") or "").strip():
+        summary["ollama_model"] = str(vals["OLLAMA_MODEL"]).strip()
+    if (vals.get("OLLAMA_KEEP_ALIVE") or "").strip():
+        summary["ollama_keep_alive"] = str(vals["OLLAMA_KEEP_ALIVE"]).strip()
+    if (vals.get("PANEL_HOST") or "").strip():
+        summary["panel_host"] = str(vals["PANEL_HOST"]).strip()
+    raw_port = vals.get("PANEL_PORT")
+    if raw_port is not None and str(raw_port).strip():
+        try:
+            summary["panel_port"] = int(str(raw_port).strip())
+        except (ValueError, TypeError):
+            pass
+    return summary
 
 
 def read_panel_port(root_dir: Path) -> int:
     """Read only PANEL_PORT from .env (default 7878) without mutating os.environ."""
-    env_path = root_dir / ".env"
-    if not env_path.exists():
-        return 7878
-    try:
-        raw = dotenv_values(env_path).get("PANEL_PORT")
-        if raw is not None and str(raw).strip():
-            return int(str(raw).strip())
-    except (OSError, ValueError, TypeError):
-        pass
-    return 7878
+    return int(read_env_summary(root_dir)["panel_port"])
 
 
 def read_ollama_url(root_dir: Path) -> str:
     """Read only OLLAMA_BASE_URL from .env (default http://127.0.0.1:11434)."""
-    env_path = root_dir / ".env"
-    if not env_path.exists():
-        return "http://127.0.0.1:11434"
-    try:
-        raw = dotenv_values(env_path).get("OLLAMA_BASE_URL")
-        if raw is not None and str(raw).strip():
-            return str(raw).strip()
-    except OSError:
-        pass
-    return "http://127.0.0.1:11434"
+    return str(read_env_summary(root_dir)["ollama_base_url"])
 
 
 class BotProcessManager:
@@ -150,6 +180,7 @@ class BotProcessManager:
         data_dir: Path | None = None,
         bot_cmd: list[str] | None = None,
         auto_restart: bool = False,
+        ollama_model: str = "",
         max_restarts: int = 3,
         restart_window_sec: float = 600.0,
         is_python_pid: Callable[[int], bool] = is_python_process,
@@ -167,6 +198,7 @@ class BotProcessManager:
             str(self.root_dir / "main.py"),
         ]
         self.auto_restart = auto_restart
+        self.ollama_model = ollama_model.strip()
         self.max_restarts = max_restarts
         self.restart_window_sec = restart_window_sec
         self._is_python_pid = is_python_pid
@@ -202,9 +234,16 @@ class BotProcessManager:
         self.stop_path.unlink(missing_ok=True)
         self._stopping = False
         self._stop_requested = False
+        env = os.environ.copy()
+        model = self.ollama_model.strip()
+        if model:
+            env["OLLAMA_MODEL"] = model
+        else:
+            env.pop("OLLAMA_MODEL", None)
         self._proc = subprocess.Popen(
             self.bot_cmd,
             cwd=str(self.root_dir),
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -349,6 +388,7 @@ class BotProcessManager:
                 discord_ready=bool(data.get("discord_ready", False)),
                 llm_ok=bool(data.get("llm_ok", False)),
                 voice_sessions=int(data.get("voice_sessions", 0) or 0),
+                ollama_model=str(data.get("ollama_model", "") or ""),
             )
         state = STATE_STOPPING if self._stopping else default_state
         return BotStatus(state=state, external=external, pid=expected_pid)
@@ -396,6 +436,7 @@ class BotProcessManager:
                         llm_ok=status.llm_ok,
                         voice_sessions=status.voice_sessions,
                         exit_code=self._last_exit_code,
+                        ollama_model=status.ollama_model,
                     )
                 status = self._status_from_file(ext_pid, STATE_RUNNING, external=True)
                 if status.started is None and ext_started is not None:
@@ -408,6 +449,7 @@ class BotProcessManager:
                         discord_ready=status.discord_ready,
                         llm_ok=status.llm_ok,
                         voice_sessions=status.voice_sessions,
+                        ollama_model=status.ollama_model,
                     )
                 return status
 

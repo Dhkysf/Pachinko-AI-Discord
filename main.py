@@ -144,6 +144,7 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
             discord_ready=False,
             voice_sessions=0,
             llm_ok=False,
+            ollama_model=config.ollama_model,
         )
 
         migrate_legacy_db(config.db_path, DATA_DIR)
@@ -226,6 +227,7 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
                     discord_ready=discord_ready,
                     voice_sessions=voice_sessions,
                     llm_ok=llm_ok,
+                    ollama_model=config.ollama_model,
                 )
                 await asyncio.sleep(10.0)
 
@@ -303,6 +305,7 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
                 discord_ready=bool(active_bot and getattr(active_bot, "is_ready", lambda: False)()),
                 voice_sessions=len(getattr(active_bot, "voice_sessions", None) or {}),
                 llm_ok=bool(llm and llm.last_ok),
+                ollama_model=config.ollama_model,
             )
         except Exception:
             pass

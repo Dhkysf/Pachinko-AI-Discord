@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
@@ -12,6 +13,15 @@ from typing import Callable
 
 from PIL import ImageTk
 
+from app.extras import (
+    CheckResult,
+    backup_database,
+    build_diagnostics,
+    fetch_ollama_models,
+    run_preflight,
+    start_ollama,
+    warm_up_ollama,
+)
 from app.process import (
     STATE_ALREADY_RUNNING,
     STATE_CRASHED,
@@ -23,11 +33,14 @@ from app.process import (
     BotStatus,
     format_uptime,
     load_settings,
+    read_env_summary,
     read_panel_port,
     save_settings,
     tail_log_lines,
 )
 from app.tray import TrayController, make_icon_image, status_color
+
+_MODEL_ENV_LABEL = "(use .env)"
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -55,16 +68,21 @@ class PachinkoControlApp:
         self._tray_notified_once = False
         self._last_log_sig: tuple[int, int] | None = None
         self._last_status = BotStatus(state=STATE_STOPPED)
+        self._warmed_run_key: tuple[int | None, int | None] | None = None
+        self._installed_models: list[str] = []
+
+        self.manager.ollama_model = self.settings["ollama_model"]
 
         self.root.title("Pachinko Control")
-        self.root.geometry("760x560")
-        self.root.minsize(640, 440)
+        self.root.geometry("760x620")
+        self.root.minsize(640, 480)
         self._icon_photo = ImageTk.PhotoImage(make_icon_image(status_color(STATE_STOPPED), size=32))
         self.root.iconphoto(True, self._icon_photo)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._build_ui()
         self._sync_startup_checkbox()
+        self.refresh_models()
         self._poll_loop()
 
     def attach_tray(self, tray: TrayController) -> None:
@@ -110,25 +128,27 @@ class PachinkoControlApp:
         self._btn_stop = ttk.Button(row1, text="Stop bot", command=self.stop_bot)
         self._btn_restart = ttk.Button(row1, text="Restart bot", command=self.restart_bot)
         self._btn_panel = ttk.Button(row1, text="Open web panel", command=self.open_web_panel)
-        for btn in (self._btn_start, self._btn_stop, self._btn_restart, self._btn_panel):
+        self._btn_preflight = ttk.Button(row1, text="Check setup", command=self.check_setup)
+        for btn in (self._btn_start, self._btn_stop, self._btn_restart, self._btn_panel, self._btn_preflight):
             btn.pack(side="left", padx=(0, 6))
 
         row2 = ttk.Frame(btn_frame)
-        row2.pack(fill="x")
+        row2.pack(fill="x", pady=(0, 4))
+        self._btn_backup = ttk.Button(row2, text="Backup now", command=self.backup_now)
+        self._btn_backups = ttk.Button(row2, text="Open backups folder", command=self.open_backups_folder)
+        self._btn_diag = ttk.Button(row2, text="Copy diagnostics", command=self.copy_diagnostics)
         self._btn_checks = ttk.Button(row2, text="Run checks", command=self.run_checks)
         self._btn_ytdlp = ttk.Button(row2, text="Update yt-dlp", command=self.update_ytdlp)
-        self._btn_repair = ttk.Button(row2, text="Repair install", command=self.repair_install)
-        self._btn_env = ttk.Button(row2, text="Edit settings", command=self.edit_settings)
-        self._btn_logs = ttk.Button(row2, text="Open logs folder", command=self.open_logs_folder)
-        self._btn_root = ttk.Button(row2, text="Open project folder", command=self.open_project_folder)
-        for btn in (
-            self._btn_checks,
-            self._btn_ytdlp,
-            self._btn_repair,
-            self._btn_env,
-            self._btn_logs,
-            self._btn_root,
-        ):
+        for btn in (self._btn_backup, self._btn_backups, self._btn_diag, self._btn_checks, self._btn_ytdlp):
+            btn.pack(side="left", padx=(0, 6))
+
+        row3 = ttk.Frame(btn_frame)
+        row3.pack(fill="x")
+        self._btn_repair = ttk.Button(row3, text="Repair install", command=self.repair_install)
+        self._btn_env = ttk.Button(row3, text="Edit settings", command=self.edit_settings)
+        self._btn_logs = ttk.Button(row3, text="Open logs folder", command=self.open_logs_folder)
+        self._btn_root = ttk.Button(row3, text="Open project folder", command=self.open_project_folder)
+        for btn in (self._btn_repair, self._btn_env, self._btn_logs, self._btn_root):
             btn.pack(side="left", padx=(0, 6))
 
         # --- Settings checkboxes ---
@@ -166,6 +186,29 @@ class PachinkoControlApp:
             variable=self._var_min_tray,
             command=self._on_settings_changed,
         ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+
+        model_row = ttk.Frame(cfg_frame)
+        model_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Label(model_row, text="Ollama model:").pack(side="left", padx=(0, 6))
+        saved_model = self.settings["ollama_model"]
+        self._var_model = tk.StringVar(value=saved_model or _MODEL_ENV_LABEL)
+        self._model_combo = ttk.Combobox(
+            model_row,
+            textvariable=self._var_model,
+            state="readonly",
+            width=28,
+            values=[_MODEL_ENV_LABEL] + ([saved_model] if saved_model else []),
+        )
+        self._model_combo.pack(side="left", padx=(0, 6))
+        self._model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
+        ttk.Button(model_row, text="Refresh", command=self.refresh_models).pack(side="left", padx=(0, 8))
+        self._restart_needed_var = tk.StringVar(value="")
+        ttk.Label(
+            model_row,
+            textvariable=self._restart_needed_var,
+            foreground="#d97706",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left")
 
         # --- Log view ---
         log_frame = ttk.LabelFrame(outer, text="Logs (data/logs/pachinko.log)", padding=8)
@@ -278,9 +321,149 @@ class PachinkoControlApp:
 
     def start_bot(self) -> None:
         def task() -> None:
-            self.manager.start()
+            results, models = run_preflight(
+                self.manager.root_dir,
+                selected_model=self.settings["ollama_model"],
+                bot_running=False,
+            )
+            self._apply_models(models)
+            if all(r.ok for r in results):
+                self.manager.start()
+            else:
+                self.root.after(0, lambda: self._show_preflight_dialog(results, allow_start=True))
 
         self._run_bg(task)
+
+    def check_setup(self) -> None:
+        def task() -> None:
+            running = self._is_bot_active(self._last_status)
+            results, models = run_preflight(
+                self.manager.root_dir,
+                selected_model=self.settings["ollama_model"],
+                bot_running=running,
+            )
+            self._apply_models(models)
+            self.root.after(0, lambda: self._show_preflight_dialog(results, allow_start=False))
+
+        self._run_bg(task)
+
+    def refresh_models(self) -> None:
+        def worker() -> None:
+            env = read_env_summary(self.manager.root_dir)
+            reachable, models, _ = fetch_ollama_models(env["ollama_base_url"])
+            if reachable:
+                self.root.after(0, lambda: self._apply_models(models))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_models(self, models: list[str]) -> None:
+        if models:
+            self._installed_models = list(models)
+        current = self.settings["ollama_model"]
+        values = [_MODEL_ENV_LABEL, *self._installed_models]
+        if current and current not in values:
+            values.append(current)
+        if hasattr(self, "_model_combo"):
+            self._model_combo.configure(values=values)
+
+    def _on_model_selected(self, _event: object = None) -> None:
+        raw = self._var_model.get().strip()
+        chosen = "" if raw == _MODEL_ENV_LABEL else raw
+        self.settings["ollama_model"] = chosen
+        self.manager.ollama_model = chosen
+        save_settings(self.settings_path, self.settings)
+        self._update_restart_needed(self._last_status)
+
+    def _update_restart_needed(self, status: BotStatus) -> None:
+        if not self._is_bot_active(status) or not status.ollama_model:
+            self._restart_needed_var.set("")
+            return
+        env_model = read_env_summary(self.manager.root_dir)["ollama_model"]
+        effective = self.settings["ollama_model"] or env_model
+        self._restart_needed_var.set("Restart needed" if effective != status.ollama_model else "")
+
+    @staticmethod
+    def _is_bot_active(status: BotStatus) -> bool:
+        return status.state in (STATE_RUNNING, STATE_STARTING, STATE_STOPPING, STATE_ALREADY_RUNNING) or status.external
+
+    def _show_preflight_dialog(self, results: list[CheckResult], *, allow_start: bool) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("Setup Check")
+        win.geometry("560x320")
+        win.transient(self.root)
+
+        body = ttk.Frame(win, padding=10)
+        body.pack(fill="both", expand=True)
+
+        def render(items: list[CheckResult]) -> None:
+            for child in body.winfo_children():
+                child.destroy()
+
+            for item in items:
+                row = ttk.Frame(body)
+                row.pack(fill="x", pady=(0, 6))
+                badge = ttk.Label(
+                    row,
+                    text="OK" if item.ok else "PROBLEM",
+                    foreground="#16a34a" if item.ok else "#dc2626",
+                    font=("Segoe UI", 9, "bold"),
+                    width=9,
+                )
+                badge.pack(side="left", anchor="n")
+                text_col = ttk.Frame(row)
+                text_col.pack(side="left", fill="x", expand=True)
+                ttk.Label(text_col, text=f"{item.name}: {item.detail}", wraplength=430, justify="left").pack(anchor="w")
+                if not item.ok and item.hint:
+                    ttk.Label(
+                        text_col,
+                        text=f"Fix: {item.hint}",
+                        foreground="#4b5563",
+                        wraplength=430,
+                        justify="left",
+                    ).pack(anchor="w")
+
+            btn_row = ttk.Frame(body)
+            btn_row.pack(fill="x", pady=(10, 0))
+
+            def recheck() -> None:
+                new_res, models = run_preflight(
+                    self.manager.root_dir,
+                    selected_model=self.settings["ollama_model"],
+                    bot_running=self._is_bot_active(self._last_status),
+                )
+                self._apply_models(models)
+                render(new_res)
+
+            if any((not r.ok) and r.code == "ollama_down" for r in items):
+                def launch_ollama() -> None:
+                    ok, msg = start_ollama()
+                    if not ok:
+                        messagebox.showerror("Start Ollama", msg, parent=win)
+                        return
+                    for _ in range(10):
+                        time.sleep(0.5)
+                        reachable, models, _ = fetch_ollama_models(
+                            read_env_summary(self.manager.root_dir)["ollama_base_url"]
+                        )
+                        if reachable:
+                            self._apply_models(models)
+                            break
+                    recheck()
+
+                ttk.Button(btn_row, text="Start Ollama", command=launch_ollama).pack(side="left", padx=(0, 6))
+
+            ttk.Button(btn_row, text="Re-check", command=recheck).pack(side="left", padx=(0, 6))
+            if allow_start:
+                def start_anyway() -> None:
+                    win.destroy()
+                    self._run_bg(lambda: self.manager.start())
+
+                ttk.Button(btn_row, text="Start anyway", command=start_anyway).pack(side="right")
+                ttk.Button(btn_row, text="Cancel", command=win.destroy).pack(side="right", padx=(0, 6))
+            else:
+                ttk.Button(btn_row, text="Close", command=win.destroy).pack(side="right")
+
+        render(results)
 
     def stop_bot(self) -> None:
         def task() -> None:
@@ -401,6 +584,51 @@ class PachinkoControlApp:
     def open_project_folder(self) -> None:
         os.startfile(str(self.manager.root_dir))
 
+    def open_backups_folder(self) -> None:
+        backups_dir = self.manager.data_dir / "backups"
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(backups_dir))
+
+    def backup_now(self) -> None:
+        def task() -> None:
+            db_path = self.manager.data_dir / "pachinko.db"
+            backups_dir = self.manager.data_dir / "backups"
+            try:
+                created = backup_database(db_path, backups_dir)
+                msg = f"Backup saved: {created.name}"
+                self.root.after(0, lambda: messagebox.showinfo("Backup now", msg, parent=self.root))
+            except Exception as exc:
+                self.root.after(0, lambda err=str(exc): messagebox.showerror("Backup now", err, parent=self.root))
+
+        self._run_bg(task)
+
+    def copy_diagnostics(self) -> None:
+        def task() -> None:
+            status = self.manager.poll()
+            env = read_env_summary(self.manager.root_dir)
+            preflight, _ = run_preflight(
+                self.manager.root_dir,
+                selected_model=self.settings["ollama_model"],
+                bot_running=self._is_bot_active(status),
+            )
+            text = build_diagnostics(
+                status=status,
+                selected_model=self.settings["ollama_model"],
+                env_model=env["ollama_model"],
+                preflight=preflight,
+                log_path=self.manager.log_path,
+            )
+
+            def copy_to_clipboard() -> None:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                self.root.update()
+                messagebox.showinfo("Copy diagnostics", "Diagnostics copied to clipboard.", parent=self.root)
+
+            self.root.after(0, copy_to_clipboard)
+
+        self._run_bg(task)
+
     def show_window(self) -> None:
         self.root.deiconify()
         self.root.state("normal")
@@ -458,10 +686,11 @@ class PachinkoControlApp:
         self._btn_start.configure(state="normal" if can_start else "disabled")
         self._btn_stop.configure(state="normal" if can_stop else "disabled")
         self._btn_restart.configure(state="normal" if can_stop else "disabled")
-        self._btn_checks.configure(state="disabled" if self._busy else "normal")
-        self._btn_ytdlp.configure(state="disabled" if self._busy else "normal")
+        for btn in (self._btn_preflight, self._btn_backup, self._btn_diag, self._btn_checks, self._btn_ytdlp):
+            btn.configure(state="disabled" if self._busy else "normal")
 
     def _refresh_status(self) -> None:
+        prev = self._last_status
         status = self.manager.poll()
         self._last_status = status
 
@@ -474,8 +703,32 @@ class PachinkoControlApp:
         self._voice_var.set(f"Voice sessions: {status.voice_sessions}")
 
         self._update_buttons(status)
+        self._update_restart_needed(status)
         if self.tray is not None:
             self.tray.update(status)
+            if status.state == STATE_CRASHED and prev.state != STATE_CRASHED:
+                self.tray.notify("Pachinko bot crashed. Check logs or copy diagnostics.")
+            elif (
+                prev.llm_ok
+                and not status.llm_ok
+                and status.state in (STATE_RUNNING, STATE_STARTING)
+            ):
+                self.tray.notify("Ollama health changed to error.")
+
+        if status.discord_ready:
+            run_key = (status.pid, status.started)
+            if run_key != self._warmed_run_key:
+                self._warmed_run_key = run_key
+                env = read_env_summary(self.manager.root_dir)
+                if env["llm_provider"] == "ollama":
+                    model = status.ollama_model or self.settings["ollama_model"] or env["ollama_model"]
+                    threading.Thread(
+                        target=warm_up_ollama,
+                        args=(env["ollama_base_url"], model, env["ollama_keep_alive"]),
+                        daemon=True,
+                    ).start()
+        elif status.state in (STATE_STOPPED, STATE_CRASHED) and not status.external:
+            self._warmed_run_key = None
 
     def _refresh_logs(self, *, force: bool = False) -> None:
         if not force and not self.root.winfo_viewable():

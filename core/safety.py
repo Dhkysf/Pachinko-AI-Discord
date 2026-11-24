@@ -30,6 +30,25 @@ _SECRET_PATTERNS = [
     re.compile(r"\b[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27,}\b"),  # Discord token
 ]
 
+_ENV_SECRET_RE = re.compile(
+    r"\b(DISCORD_TOKEN|GEMINI_API_KEY|OPENAI_API_KEY|GROQ_API_KEY|ELEVENLABS_API_KEY|PANEL_TOKEN)"
+    r"(\s*=\s*)([^\s\"'`]+|\"[^\"]*\"|'[^']*')",
+    re.IGNORECASE,
+)
+_BEARER_SECRET_RE = re.compile(r"\b(Bearer\s+)([A-Za-z0-9._~+/=-]{12,})", re.IGNORECASE)
+
+
+def redact_secrets(text: str, replacement: str = "[REDACTED]") -> str:
+    """Redact API keys, tokens, and secret env/header assignments from text."""
+    if not text:
+        return ""
+    out = text
+    for pat in _SECRET_PATTERNS:
+        out = pat.sub(replacement, out)
+    out = _ENV_SECRET_RE.sub(rf"\1\2{replacement}", out)
+    out = _BEARER_SECRET_RE.sub(rf"\1{replacement}", out)
+    return out
+
 
 def neutralize(text: str, max_chars: int = 8000) -> str:
     """Strip control tokens & escape structural tags so they cannot spoof prompt blocks."""
@@ -65,8 +84,7 @@ def filter_outgoing(text: str) -> str:
         return ""
     out = text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
     out = re.sub(r"<@&\d+>", "[role]", out)
-    for pat in _SECRET_PATTERNS:
-        out = pat.sub("[RAHASIA_DISENSOR]", out)
+    out = redact_secrets(out, "[RAHASIA_DISENSOR]")
     return out.strip()
 
 

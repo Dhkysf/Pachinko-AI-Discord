@@ -60,10 +60,13 @@ Open https://discord.com/developers/applications → select your bot application
 
 ### Control App (`Pachinko.lnk` / `Pachinko.pyw`)
 - <!-- Screenshot placeholder: Pachinko Control window & system tray -->
-- **System tray & status:** Shows live bot state (`Stopped`, `Starting`, `Running`, `Stopping`, `Crashed`, `Already running`), uptime, Discord readiness, Ollama health, and voice session count. Closing with **X** minimizes to the tray when enabled.
-- **Quick actions:** Start / Stop / Restart bot, Open web panel, Run checks, Update `yt-dlp`, Repair install (`setup.bat`), Edit settings (`.env` in Notepad), and open logs/project folders.
+- **System tray & status:** Shows live bot state (`Stopped`, `Starting`, `Running`, `Stopping`, `Crashed`, `Already running`), uptime, Discord readiness, Ollama health, and voice session count. Closing with **X** minimizes to the tray when enabled, and tray notifications alert you if the bot crashes or Ollama goes down.
+- **Pre-flight & model picker:** **Check setup** (also run before **Start bot**) checks `.env` + `DISCORD_TOKEN` presence, `ffmpeg` on `PATH`, Ollama reachability + installed model (with a **Start Ollama** button if down), and `PANEL_PORT`. The **Ollama model** dropdown lets you pick an installed model (saved in `data/app_settings.json`, passed via `OLLAMA_MODEL` without touching `.env`) and warms it up once Discord is ready.
+- **Backups & diagnostics:** **Backup now** uses SQLite's online backup API to copy `data/pachinko.db` into `data/backups/pachinko-YYYYMMDD-HHMMSS.db` safely while the bot runs (keeping the newest 14). **Copy diagnostics** copies status, versions, pre-flight results, and the last 60 redacted log lines to the clipboard.
+- **Restoring a backup:** Stop the bot, copy the chosen `data/backups/pachinko-*.db` file over `data/pachinko.db`, delete any stale `data/pachinko.db-wal` and `data/pachinko.db-shm` files, then start the bot again.
+- **Quick actions:** Start / Stop / Restart bot, Open web panel, Run checks, Update `yt-dlp`, Repair install (`setup.bat`), Edit settings (`.env` in Notepad), and open logs/backups/project folders.
 - **Emergency fallbacks:** `run.bat` and `check.bat` remain in the root folder if you ever need a plain console run.
-- **Out of scope:** Single-file `.exe` packaging (PyInstaller) and automatic bot code self-updates.
+- **Out of scope:** Single-file `.exe` packaging (PyInstaller), editing `.env` directly from the app, and automatic bot code self-updates.
 
 ---
 
