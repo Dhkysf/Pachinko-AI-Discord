@@ -80,3 +80,10 @@ Open https://discord.com/developers/applications → select your bot application
 ## 🛠️ Development
 
 Double-click **`check.bat`** (or run `.venv\Scripts\python.exe -m compileall -q ...` and `.venv\Scripts\python.exe -m unittest discover tests -v`) to syntax-check all modules and run the offline unit test suite.
+
+### Runtime Files & Exit Codes
+- **Logs:** `data/logs/pachinko.log` (UTF-8, rotated at 5 MB × 3 backups).
+- **Single-instance lock:** `data/run/bot.lock` (`pid`, `started`). Removed on clean exit; stale locks are replaced.
+- **Status file:** `data/run/status.json` (updated on start and every 10 s with `state`, `pid`, `started`, `discord_ready`, `voice_sessions`, `llm_ok`). Removed on clean exit.
+- **Stop request:** Create `data/run/stop.request` to trigger a clean shutdown (deleted automatically).
+- **Exit codes:** `0` clean stop, `3` already running, `1` crash.

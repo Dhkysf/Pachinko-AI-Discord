@@ -11,6 +11,7 @@ import inspect
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -334,6 +335,30 @@ class LLMClient:
         self._no_tools_models: set[str] = set()
         self._gemini_client: Any = None
         self._gemini_api_key: str = ""
+        self.last_ok: bool = False
+        self.last_ok_ts: float = 0.0
+        self._last_probe_ts: float = 0.0
+
+    def _mark_ok(self) -> None:
+        self.last_ok = True
+        self.last_ok_ts = time.time()
+
+    async def check_health(self, max_age: float = 60.0) -> bool:
+        """Return recent LLM health, probing Ollama /api/tags at most once per max_age."""
+        now = time.time()
+        if self.last_ok and (now - self.last_ok_ts) < max_age:
+            return True
+        if config.llm_provider == "ollama" and (now - self._last_probe_ts) >= max_age:
+            self._last_probe_ts = now
+            try:
+                r = await self._http.get(f"{config.ollama_base_url.rstrip('/')}/api/tags", timeout=2.0)
+                if r.status_code == 200:
+                    self._mark_ok()
+                else:
+                    self.last_ok = False
+            except Exception:
+                self.last_ok = False
+        return self.last_ok
 
     def supports_tools(self) -> bool:
         return not (config.llm_provider == "ollama" and config.ollama_model in self._no_tools_models)
@@ -377,18 +402,28 @@ class LLMClient:
         provider = config.llm_provider
         try:
             if provider == "ollama":
-                return await self._ollama_once(messages, tools=tools, fast_voice=fast_voice)
-            if provider == "openai_compat":
-                return await self._openai_once(messages, tools=tools, fast_voice=fast_voice)
-            if provider == "gemini":
-                return await self._gemini_once(messages)
+                res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice)
+            elif provider == "openai_compat":
+                res = await self._openai_once(messages, tools=tools, fast_voice=fast_voice)
+            elif provider == "gemini":
+                res = await self._gemini_once(messages)
+            else:
+                res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice)
+            self._mark_ok()
+            return res
         except Exception as e:
             log.warning("Primary provider '%s' failed (%s), checking fallback...", provider, e)
             if provider != "gemini" and config.gemini_api_key:
                 log.info("Falling back to Gemini API...")
-                return await self._gemini_once(messages)
+                try:
+                    res = await self._gemini_once(messages)
+                    self._mark_ok()
+                    return res
+                except Exception:
+                    self.last_ok = False
+                    raise
+            self.last_ok = False
             raise
-        return await self._ollama_once(messages, tools=tools, fast_voice=fast_voice)
 
     async def stream_text(
         self,
@@ -402,23 +437,36 @@ class LLMClient:
             if provider == "ollama":
                 async for tok in self._ollama_stream(messages, fast_voice=fast_voice):
                     yield tok
+                self._mark_ok()
                 return
             if provider == "openai_compat":
                 async for tok in self._openai_stream(messages, fast_voice=fast_voice):
                     yield tok
+                self._mark_ok()
                 return
         except Exception as e:
             log.warning("Streaming '%s' failed (%s), trying fallback...", provider, e)
             if config.gemini_api_key:
-                resp = await self._gemini_once(messages)
-                if resp.text:
-                    yield resp.text
-                return
+                try:
+                    resp = await self._gemini_once(messages)
+                    self._mark_ok()
+                    if resp.text:
+                        yield resp.text
+                    return
+                except Exception:
+                    self.last_ok = False
+                    raise
+            self.last_ok = False
             raise
 
-        resp = await self._gemini_once(messages)
-        if resp.text:
-            yield resp.text
+        try:
+            resp = await self._gemini_once(messages)
+            self._mark_ok()
+            if resp.text:
+                yield resp.text
+        except Exception:
+            self.last_ok = False
+            raise
 
     # ---------------- Ollama Native (/api/chat) ----------------
     async def _ollama_once(
