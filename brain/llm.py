@@ -530,17 +530,34 @@ class LLMClient:
         url = f"{config.openai_base_url.rstrip('/')}/chat/completions"
 
         async def _raw_tokens() -> AsyncIterator[str]:
+            logged_bad_json = False
             async with self._http.stream("POST", url, json=payload, headers=headers) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
+                    if not line.startswith("data:"):
                         continue
-                    raw = line[6:].strip()
+                    raw = line[5:].strip()
+                    if not raw:
+                        continue
                     if raw == "[DONE]":
                         break
-                    delta = json.loads(raw)["choices"][0].get("delta", {}).get("content", "")
-                    if delta:
-                        yield delta
+                    try:
+                        obj = json.loads(raw)
+                    except json.JSONDecodeError:
+                        if not logged_bad_json:
+                            log.debug("Skipping invalid SSE JSON line from openai_compat: %r", raw[:120])
+                            logged_bad_json = True
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    choices = obj.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice0 = choices[0]
+                    delta = choice0.get("delta") if isinstance(choice0, dict) else None
+                    content = delta.get("content") if isinstance(delta, dict) else None
+                    if isinstance(content, str) and content:
+                        yield content
 
         async for tok in _filter_stream(_raw_tokens()):
             yield tok

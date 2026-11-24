@@ -23,16 +23,34 @@ CHANNELS = 2
 BYTES_PER_MS = (SAMPLE_RATE * CHANNELS * 2) // 1000  # 192 bytes/ms
 
 
-def analyze_end_of_turn(pcm_48k_stereo: bytes) -> float:
+def analyze_end_of_turn(pcm_48k_stereo: bytes, rms_threshold: float = 0.0) -> float:
     """Return confidence score (0.0 .. 1.0) that the speaker has finished talking.
 
     Score >= 0.55 means a natural sentence end (tail energy slopes down).
     Score < 0.55 means a likely mid-sentence thinking pause (energy stays high).
     """
-    samples = np.frombuffer(pcm_48k_stereo, dtype=np.int16)
-    if samples.size < SAMPLE_RATE:  # < 0.5 seconds
+    n_stereo = len(pcm_48k_stereo) // 4
+    if n_stereo < SAMPLE_RATE // 2:  # < 0.5 seconds
         return 0.65
+    samples = np.frombuffer(pcm_48k_stereo, dtype=np.int16, count=n_stereo * 2)
     mono = samples.reshape(-1, 2).mean(axis=1).astype(np.float32)
+
+    # Trim leading/trailing near-silent frames so trailing silence does not skew the tail
+    frame_len = SAMPLE_RATE // 50  # 20ms
+    n_frames = mono.size // frame_len
+    if n_frames > 0:
+        frames = mono[: n_frames * frame_len].reshape(n_frames, frame_len)
+        frame_rms = np.sqrt(np.mean(frames ** 2, axis=1))
+        peak = float(frame_rms.max())
+        if peak < 50.0:
+            return 0.65
+        floor = min(0.5 * peak, max(50.0, 0.10 * peak, float(rms_threshold)))
+        voiced_idx = np.flatnonzero(frame_rms >= floor)
+        if voiced_idx.size == 0:
+            return 0.65
+        mono = mono[int(voiced_idx[0]) * frame_len : (int(voiced_idx[-1]) + 1) * frame_len]
+        if mono.size < SAMPLE_RATE // 2:
+            return 0.65
 
     # Take the last 600ms of voiced audio, compare first half vs tail half
     tail_len = min(mono.size, int(0.6 * SAMPLE_RATE))
@@ -56,6 +74,7 @@ class _SpeakerTrack:
     buf: bytearray = field(default_factory=bytearray)
     voiced_ms: int = 0
     last_voice_ts: float = 0.0
+    last_packet_ts: float = 0.0
     speaking: bool = False
     last_notify_ms: int = 0
 
@@ -112,12 +131,13 @@ class SmartTurnSink(Sink):
             if tr is None:
                 tr = self._tracks[user.id] = _SpeakerTrack(user=user)
 
-            # Insert short synthetic silence if packet gap < max_silence (Parked Stream)
-            if tr.speaking and tr.last_voice_ts > 0:
-                gap_s = now - tr.last_voice_ts
+            # Insert short synthetic silence only on a real packet gap (Parked Stream)
+            if tr.speaking and tr.last_packet_ts > 0:
+                gap_s = now - tr.last_packet_ts
                 if 0.08 < gap_s < self.max_silence_s:
-                    pad_ms = min(300, int(gap_s * 1000))
+                    pad_ms = min(300, round(gap_s * 1000))
                     tr.buf.extend(bytes(pad_ms * BYTES_PER_MS))
+            tr.last_packet_ts = now
 
             tr.buf.extend(pcm)
             if voiced:
@@ -150,7 +170,7 @@ class SmartTurnSink(Sink):
                         self._emit_locked(tr)
                     else:
                         # Check prosody whether sentence is complete or still thinking
-                        conf = analyze_end_of_turn(bytes(tr.buf))
+                        conf = analyze_end_of_turn(bytes(tr.buf), rms_threshold=self.rms_threshold)
                         if conf >= 0.58:
                             self._emit_locked(tr)
             time.sleep(0.04)
@@ -160,6 +180,7 @@ class SmartTurnSink(Sink):
         voiced_ms = tr.voiced_ms
         tr.buf.clear()
         tr.voiced_ms = 0
+        tr.last_packet_ts = 0.0
         tr.speaking = False
         tr.last_notify_ms = 0
         if voiced_ms < self.min_speech_ms:

@@ -224,6 +224,22 @@ class BrainRunner:
                             tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
                         )
                         messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
+                elif first.text and first.text.strip():
+                    if "<silence/>" in first.text:
+                        return
+                    clean, explicit_emo, feel_raw = extract_tags(first.text)
+                    emotion = await self.heart.apply_feel_block(
+                        feel_raw,
+                        explicit_emo or self.heart.dominant_emotion(prof.temperament),
+                        user_id,
+                        user_name,
+                        prof.temperament,
+                    )
+                    for part in _SENTENCE_SPLIT_RE.split(clean):
+                        spoken, urls = clean_for_speech(filter_outgoing(part))
+                        if len(spoken) >= 2:
+                            yield spoken, emotion, urls
+                    return
 
             buffer = ""
             full_raw = ""
