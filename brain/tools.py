@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from typing import Any, Callable, Awaitable
 
@@ -108,6 +109,8 @@ class ToolBox:
                 args = {"query": raw_args}
         else:
             args = raw_args or {}
+        if not isinstance(args, dict):
+            args = {}
 
         allowed, reason = await self.gate.check(
             name, args, requester_id=str(user_id), requester_name=user_name
@@ -125,7 +128,16 @@ class ToolBox:
             await self.memory.remember(f"{user_name}: {fact}", scope=f"person:{user_id}", subject_id=str(user_id), importance=0.8)
             return f"Saved to notebook ({doc_key}): {fact}"
         if name == "set_reminder":
-            mins = max(0.2, min(1440.0, float(args.get("minutes", 5))))
+            raw_mins = args.get("minutes", 5)
+            if isinstance(raw_mins, bool):
+                return f"Invalid minutes value: {raw_mins!r}. Provide a finite number."
+            try:
+                mins_val = float(raw_mins)
+            except (TypeError, ValueError):
+                return f"Invalid minutes value: {raw_mins!r}. Provide a finite number."
+            if not math.isfinite(mins_val):
+                return f"Invalid minutes value: {raw_mins!r}. Provide a finite number."
+            mins = max(0.2, min(1440.0, mins_val))
             note = str(args.get("note", "Pengingat!")).strip()
             due = time.time() + mins * 60.0
             await self.memory.add_schedule(

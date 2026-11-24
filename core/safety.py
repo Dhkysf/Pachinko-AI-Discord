@@ -68,3 +68,17 @@ def filter_outgoing(text: str) -> str:
     for pat in _SECRET_PATTERNS:
         out = pat.sub("[RAHASIA_DISENSOR]", out)
     return out.strip()
+
+
+def fit_discord(text: str, limit: int = 2000) -> str:
+    """Trim text to fit Discord's message limit on a line or word boundary."""
+    if len(text) <= limit:
+        return text
+    if limit <= 1:
+        return "…"[:limit]
+    cut = limit - 1
+    head = text[:cut]
+    split_at = max(head.rfind("\n"), head.rfind(" "))
+    if split_at >= cut // 2:
+        head = head[:split_at]
+    return head.rstrip() + "…"

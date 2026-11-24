@@ -16,6 +16,7 @@ from brain.runner import BrainRunner
 from brain.triage import MODE_HOURLY_CAP, TriageEngine
 from config import config
 from core.bus import EventBus
+from core.safety import fit_discord
 from core.store import Store
 from heart.engine import HeartEngine
 from memory.manager import MemoryManager
@@ -30,6 +31,27 @@ logging.getLogger("discord.voice.receive.reader").setLevel(logging.WARNING)
 
 GUILDS = [config.guild_id] if config.guild_id else None
 _ADMIN_ONLY_MSG = "Command ini cuma buat admin server."
+_GUILD_ONLY_MSG = "Command ini cuma bisa dipakai di server."
+_GUILD_ONLY = None if GUILDS else {discord.InteractionContextType.guild}
+
+
+async def _is_reply_to_bot(message, bot_user) -> bool:
+    if bot_user is None:
+        return False
+    ref = getattr(message, "reference", None)
+    if ref is None:
+        return False
+    resolved = getattr(ref, "resolved", None)
+    if resolved is not None:
+        return getattr(getattr(resolved, "author", None), "id", None) == bot_user.id
+    msg_id = getattr(ref, "message_id", None)
+    if msg_id and hasattr(message.channel, "fetch_message"):
+        try:
+            fetched = await message.channel.fetch_message(msg_id)
+            return getattr(getattr(fetched, "author", None), "id", None) == bot_user.id
+        except Exception:
+            return False
+    return False
 
 
 def is_admin(ctx) -> bool:
@@ -95,7 +117,7 @@ async def deliver_reminder(bot, sessions: dict, item: dict, profiles, tts) -> bo
     delivered = False
     if ch is not None:
         try:
-            await ch.send(msg_txt)
+            await ch.send(fit_discord(msg_txt))
             delivered = True
         except Exception:
             log.exception("Failed sending reminder id=%s to channel", item.get("id"))
@@ -201,8 +223,10 @@ def build_discord_bot(
         trivia_win = await economy.check_trivia_answer(room_id, uid, uname, message.content)
         if trivia_win:
             await message.reply(
-                f"🎉 **Benar, {trivia_win['winner']}!** Kamu dapat **+{trivia_win['prize']} koin** "
-                f"(Saldo: **{trivia_win['balance']} koin**) & Bond naik!",
+                fit_discord(
+                    f"🎉 **Benar, {trivia_win['winner']}!** Kamu dapat **+{trivia_win['prize']} koin** "
+                    f"(Saldo: **{trivia_win['balance']} koin**) & Bond naik!"
+                ),
                 mention_author=False,
             )
             return
@@ -210,7 +234,7 @@ def build_discord_bot(
         # 2. Deterministic triage (mention / called by name / chime in per channel mode)
         prof = profiles.current
         is_dm = isinstance(message.channel, discord.DMChannel)
-        mentioned = (bot.user in message.mentions) if bot.user else False
+        mentioned = ((bot.user in message.mentions) if bot.user else False) or await _is_reply_to_bot(message, bot.user)
         mode = await store.get_channel_mode(room_id, prof.default_channel_mode)
         person = await heart.get_person(uid, uname)
 
@@ -237,7 +261,7 @@ def build_discord_bot(
                 wake_reason=decision.reason,
             )
         if not res.silent and res.text and res.text.strip():
-            await message.reply(res.text[:1990], mention_author=False)
+            await message.reply(fit_discord(res.text), mention_author=False)
 
     @bot.event
     async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -261,8 +285,10 @@ def build_discord_bot(
 
     # ================ SLASH COMMANDS ================
 
-    @bot.slash_command(name="join", description="Ajak karakter masuk ke voice channel untuk ngobrol verbal", guild_ids=GUILDS)
+    @bot.slash_command(name="join", description="Ajak karakter masuk ke voice channel untuk ngobrol verbal", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     async def cmd_join(ctx: discord.ApplicationContext):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         if not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.respond("Masuk ke voice channel dulu ya baru panggil `/join`.", ephemeral=True)
         await ctx.defer()
@@ -292,12 +318,16 @@ def build_discord_bot(
 
         prof = profiles.current
         await ctx.followup.send(
-            f"🎧 **{prof.display_name}** masuk ke **{ch.name}** *(DAVE E2EE: {'Aktif' if dave_ok else 'Standar'})*.\n"
-            f"Langsung ngomong aja—aku dengerin dengan *Smart Turn-Taking* & *Streaming Voice*!"
+            fit_discord(
+                f"🎧 **{prof.display_name}** masuk ke **{ch.name}** *(DAVE E2EE: {'Aktif' if dave_ok else 'Standar'})*.\n"
+                f"Langsung ngomong aja—aku dengerin dengan *Smart Turn-Taking* & *Streaming Voice*!"
+            )
         )
 
-    @bot.slash_command(name="leave", description="Suruh karakter keluar dari voice channel", guild_ids=GUILDS)
+    @bot.slash_command(name="leave", description="Suruh karakter keluar dari voice channel", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     async def cmd_leave(ctx: discord.ApplicationContext):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         sess = sessions.pop(ctx.guild.id, None)
         if not sess:
             return await ctx.respond("Aku lagi nggak di voice channel.", ephemeral=True)
@@ -305,15 +335,17 @@ def build_discord_bot(
         await bus.emit("voice.left", guild_id=ctx.guild.id, reason="command")
         await ctx.respond("Sampai nanti ya! 👋")
 
-    @bot.slash_command(name="say", description="Kirim pesan ke karakter (dijawab teks & diucapkan di voice bila aktif)", guild_ids=GUILDS)
+    @bot.slash_command(name="say", description="Kirim pesan ke karakter (dijawab teks & diucapkan di voice bila aktif)", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     @discord.option("pesan", str, description="Apa yang mau kamu sampaikan")
     async def cmd_say(ctx: discord.ApplicationContext, pesan):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         await ctx.defer()
         sess = sessions.get(ctx.guild.id)
         try:
             if sess and sess.vc.is_connected():
                 ans = await sess.speak_direct_text(ctx.author.display_name, str(ctx.author.id), pesan)
-                return await ctx.followup.send(f"🎙️ **{ctx.author.display_name}:** {pesan}\n🤖 **{profiles.current.display_name}:** {ans or '...'}")
+                return await ctx.followup.send(fit_discord(f"🎙️ **{ctx.author.display_name}:** {pesan}\n🤖 **{profiles.current.display_name}:** {ans or '...'}"))
             res = await brain.run_text_turn(
                 room_id=str(ctx.channel.id),
                 user_id=str(ctx.author.id),
@@ -321,20 +353,22 @@ def build_discord_bot(
                 user_text=pesan,
                 wake_reason="slash_say",
             )
-            await ctx.followup.send(res.text.strip() or "*(diam)*")
+            await ctx.followup.send(fit_discord(res.text.strip() or "*(diam)*"))
         except Exception as e:
             log.exception("Error in /say")
-            await ctx.followup.send(f"⚠️ Gagal memproses: `{str(e)[:280]}`")
+            await ctx.followup.send(fit_discord(f"⚠️ Gagal memproses: `{str(e)[:280]}`"))
 
-    @bot.slash_command(name="mode", description="Atur seberapa sering karakter nimbrung otomatis di text channel ini", guild_ids=GUILDS)
+    @bot.slash_command(name="mode", description="Atur seberapa sering karakter nimbrung otomatis di text channel ini", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     @discord.option("level", str, choices=list(MODE_HOURLY_CAP.keys()), description="off | mention-only | quiet | normal | lively")
     async def cmd_mode(ctx: discord.ApplicationContext, level):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         if not is_admin(ctx):
             return await ctx.respond(_ADMIN_ONLY_MSG, ephemeral=True)
         await store.set_channel_mode(str(ctx.channel.id), level)
         cap = MODE_HOURLY_CAP[level]
         info = "hanya saat dipanggil" if cap == 0 else f"bisa ikut nimbrung maks {cap}x/jam"
-        await ctx.respond(f"⚙️ Mode channel ini diubah ke **`{level}`** ({info}).")
+        await ctx.respond(fit_discord(f"⚙️ Mode channel ini diubah ke **`{level}`** ({info})."))
 
     @bot.slash_command(name="mood", description="Lihat perasaan, energi, dan emosi aktif karakter saat ini", guild_ids=GUILDS)
     async def cmd_mood(ctx: discord.ApplicationContext):
@@ -342,10 +376,12 @@ def build_discord_bot(
         st = heart.state_summary(prof.temperament)
         emos = ", ".join(f"`{k}` ({v:.2f})" for k, v in st["active_emotions"].items()) or "tenang / netral"
         await ctx.respond(
-            f"💓 **Kondisi Hati {prof.display_name}**\n"
-            f"- Ekspresi Dominan: **{st['dominant']}**\n"
-            f"- Valence (Suasana Hati): `{st['valence']:+.2f}` | Arousal: `{st['arousal']:.2f}` | Energi: `{int(st['energy']*100)}%`\n"
-            f"- Emosi Aktif: {emos}"
+            fit_discord(
+                f"💓 **Kondisi Hati {prof.display_name}**\n"
+                f"- Ekspresi Dominan: **{st['dominant']}**\n"
+                f"- Valence (Suasana Hati): `{st['valence']:+.2f}` | Arousal: `{st['arousal']:.2f}` | Energi: `{int(st['energy']*100)}%`\n"
+                f"- Emosi Aktif: {emos}"
+            )
         )
 
     @bot.slash_command(name="bond", description="Cek tingkat kedekatan (9-Axis Bond) karakter denganmu", guild_ids=GUILDS)
@@ -354,25 +390,31 @@ def build_discord_bot(
         notes = await memory.get_notes(f"person:{ctx.author.id}", limit=4)
         note_str = "\n".join(f"  • {n['fact']}" for n in notes) if notes else "  • *(belum ada catatan khusus)*"
         await ctx.respond(
-            f"🤝 **Hubungan {profiles.current.display_name} & {ctx.author.display_name}**\n"
-            f"- Status: **{p['tier']}** (`{p['bond']:.1f} / 1000`)\n"
-            f"- Trust: `{p['trust']:.1f}/100` | Familiarity: `{p['familiarity']:.1f}/100` | Warmth: `{p['warmth']:+.2f}` | Rapport: `{p['rapport']:.2f}`\n"
-            f"- Kesan: *{p['impression']}*\n"
-            f"- Buku Catatan:\n{note_str}"
+            fit_discord(
+                f"🤝 **Hubungan {profiles.current.display_name} & {ctx.author.display_name}**\n"
+                f"- Status: **{p['tier']}** (`{p['bond']:.1f} / 1000`)\n"
+                f"- Trust: `{p['trust']:.1f}/100` | Familiarity: `{p['familiarity']:.1f}/100` | Warmth: `{p['warmth']:+.2f}` | Rapport: `{p['rapport']:.2f}`\n"
+                f"- Kesan: *{p['impression']}*\n"
+                f"- Buku Catatan:\n{note_str}"
+            )
         )
 
-    @bot.slash_command(name="sing", description="Request lagu / AI cover untuk dinyanyikan di voice channel", guild_ids=GUILDS)
+    @bot.slash_command(name="sing", description="Request lagu / AI cover untuk dinyanyikan di voice channel", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     @discord.option("lagu", str, description="Judul lagu atau URL YouTube")
     async def cmd_sing(ctx: discord.ApplicationContext, lagu):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         sess = sessions.get(ctx.guild.id)
         if not sess or not sess.vc.is_connected():
             return await ctx.respond("Panggil `/join` ke voice channel dulu sebelum request lagu ya!", ephemeral=True)
         await ctx.defer()
         msg = await singing.enqueue(f"guild:{ctx.guild.id}", str(ctx.author.id), ctx.author.display_name, lagu)
-        await ctx.followup.send(f"🎤 {msg}")
+        await ctx.followup.send(fit_discord(f"🎤 {msg}"))
 
-    @bot.slash_command(name="skip", description="Lewati lagu yang sedang diputar", guild_ids=GUILDS)
+    @bot.slash_command(name="skip", description="Lewati lagu yang sedang diputar", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     async def cmd_skip(ctx: discord.ApplicationContext):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         cur = singing.snapshot().get("current")
         if not cur:
             return await ctx.respond("Sedang tidak ada lagu yang diputar.", ephemeral=True)
@@ -386,8 +428,10 @@ def build_discord_bot(
         else:
             await ctx.respond("Sedang tidak ada lagu yang diputar.", ephemeral=True)
 
-    @bot.slash_command(name="queue", description="Lihat antrean lagu saat ini", guild_ids=GUILDS)
+    @bot.slash_command(name="queue", description="Lihat antrean lagu saat ini", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     async def cmd_queue(ctx: discord.ApplicationContext):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         snap = singing.snapshot()
         cur = snap["current"]
         q = snap["queue"]
@@ -398,7 +442,7 @@ def build_discord_bot(
             lines.append(f"▶️ **Sekarang:** {cur['title']} *(req: {cur['requester_name']}, status: {cur['status']})*")
         for i, it in enumerate(q[:10], 1):
             lines.append(f"`{i}.` {it['query']} *(req: {it['requester_name']})*")
-        await ctx.respond("🎶 **Antrean Lagu**\n" + "\n".join(lines))
+        await ctx.respond(fit_discord("🎶 **Antrean Lagu**\n" + "\n".join(lines)))
 
     @bot.slash_command(name="daily", description="Ambil koin harian + ramalan keberuntungan hari ini", guild_ids=GUILDS)
     async def cmd_daily(ctx: discord.ApplicationContext):
@@ -436,10 +480,12 @@ def build_discord_bot(
             f"Bond naik ke **`{p['bond']:.1f}` ({p['tier']})** | Sisa saldo: **{res['balance']} koin**."
         )
 
-    @bot.slash_command(name="trivia", description="Mulai mini-game tebak cepat berhadiah koin di channel ini", guild_ids=GUILDS)
+    @bot.slash_command(name="trivia", description="Mulai mini-game tebak cepat berhadiah koin di channel ini", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     async def cmd_trivia(ctx: discord.ApplicationContext):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         q, prize = economy.start_trivia(str(ctx.channel.id))
-        await ctx.respond(f"🧩 **Mini-Game Cepat (Hadiah {prize} koin)!**\n> {q}\n*Ketik jawabanmu langsung di chat!*")
+        await ctx.respond(fit_discord(f"🧩 **Mini-Game Cepat (Hadiah {prize} koin)!**\n> {q}\n*Ketik jawabanmu langsung di chat!*"))
 
     @bot.slash_command(name="remind", description="Minta karakter mengingatkan sesuatu beberapa menit lagi", guild_ids=GUILDS)
     @discord.option("menit", int, description="Berapa menit lagi")
@@ -454,7 +500,7 @@ def build_discord_bot(
             note=catatan,
             due_at=time.time() + mins * 60.0,
         )
-        await ctx.respond(f"⏰ Sip! Aku bakal ingetin **{catatan}** dalam **{mins} menit** lagi.")
+        await ctx.respond(fit_discord(f"⏰ Sip! Aku bakal ingetin **{catatan}** dalam **{mins} menit** lagi."))
 
     @bot.slash_command(name="privacy", description="Atur apakah karakter boleh menyapa/nimbrung ke pesanmu secara otomatis", guild_ids=GUILDS)
     @discord.option("izinkan", bool, description="True = boleh nimbrung, False = hanya merespons kalau kamu panggil")
@@ -467,8 +513,10 @@ def build_discord_bot(
         status = "diizinkan menyapa otomatis" if izinkan else "hanya membalas saat kamu panggil"
         await ctx.respond(f"🔒 Pengaturan privasi disimpan: **{status}**.", ephemeral=True)
 
-    @bot.slash_command(name="reset", description="Bersihkan riwayat obrolan jangka pendek di ruang ini (Bond & Notebook tetap aman)", guild_ids=GUILDS)
+    @bot.slash_command(name="reset", description="Bersihkan riwayat obrolan jangka pendek di ruang ini (Bond & Notebook tetap aman)", guild_ids=GUILDS, contexts=_GUILD_ONLY)
     async def cmd_reset(ctx: discord.ApplicationContext):
+        if ctx.guild is None:
+            return await ctx.respond(_GUILD_ONLY_MSG, ephemeral=True)
         if not is_admin(ctx):
             return await ctx.respond(_ADMIN_ONLY_MSG, ephemeral=True)
         await memory.clear_room_transcript(str(ctx.channel.id))

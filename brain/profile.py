@@ -35,14 +35,24 @@ class CharacterProfile:
         low = recent_text.lower()
         hits: list[tuple[int, str]] = []
         for entry in self.lore_entries:
+            if not isinstance(entry, dict):
+                continue
             scope = entry.get("scope", "both")
             if scope not in ("both", modality):
                 continue
-            kws = entry.get("keywords", [])
-            if any(kw.lower() in low for kw in kws):
-                hits.append((int(entry.get("priority", 1)), str(entry.get("content", ""))))
+            kws = entry.get("keywords")
+            content = entry.get("content")
+            if not isinstance(kws, list) or not isinstance(content, str) or not content:
+                continue
+            if any(isinstance(kw, str) and kw and kw.lower() in low for kw in kws):
+                raw_prio = entry.get("priority", 1)
+                try:
+                    prio = 1 if isinstance(raw_prio, bool) else int(raw_prio)
+                except (TypeError, ValueError, OverflowError):
+                    prio = 1
+                hits.append((prio, content))
         hits.sort(key=lambda x: x[0], reverse=True)
-        return [content for _, content in hits[:limit] if content]
+        return [content for _, content in hits[:limit]]
 
     def sample_kaomoji(self, emotion: str, k: int = 3) -> list[str]:
         pool = self.kaomoji.get(emotion) or self.kaomoji.get("happy") or []
@@ -97,7 +107,7 @@ class ProfileManager:
             prof.style_md = str(overrides["style_md"]).strip()
         if overrides.get("examples_md"):
             prof.examples_md = str(overrides["examples_md"]).strip()
-        if overrides.get("lore_entries") is not None:
+        if isinstance(overrides.get("lore_entries"), list):
             prof.lore_entries = list(overrides["lore_entries"])
         self.current = prof
         return prof

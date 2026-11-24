@@ -23,6 +23,7 @@ from brain.runner import BrainRunner
 from brain.triage import TriageEngine
 from config import config
 from core.bus import EventBus
+from core.safety import fit_discord
 from memory.manager import MemoryManager
 from speech.stt import STTEngine
 from speech.tts import TTSEngine
@@ -523,6 +524,6 @@ class NaturalVoiceSession:
     async def _safe_send(self, content: str) -> None:
         try:
             if self.text_channel:
-                await self.text_channel.send(content[:1990])
+                await self.text_channel.send(fit_discord(content))
         except Exception:
             pass

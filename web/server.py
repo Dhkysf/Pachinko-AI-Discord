@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,46 @@ from sing.engine import SingingEngine
 from speech.tts import TTSEngine
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+async def _json_dict(req: Request) -> dict[str, Any]:
+    try:
+        body = await req.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+    return body
+
+
+def _finite_float(val: Any, field: str) -> float:
+    if isinstance(val, bool):
+        raise HTTPException(status_code=400, detail=f"Invalid {field}")
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"Invalid {field}")
+    if not math.isfinite(num):
+        raise HTTPException(status_code=400, detail=f"Invalid {field}")
+    return num
+
+
+def _validate_lore_entries(entries: Any) -> list[dict[str, Any]]:
+    if not isinstance(entries, list):
+        raise HTTPException(status_code=400, detail="lore_entries must be a list")
+    for item in entries:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Each lore entry must be an object")
+        kws = item.get("keywords")
+        if not isinstance(kws, list) or not all(isinstance(k, str) for k in kws):
+            raise HTTPException(status_code=400, detail="lore_entries keywords must be a list of strings")
+        if not isinstance(item.get("content"), str):
+            raise HTTPException(status_code=400, detail="lore_entries content must be a string")
+        if "priority" in item and item["priority"] is not None:
+            _finite_float(item["priority"], "lore_entries priority")
+        if "scope" in item and item["scope"] is not None and not isinstance(item["scope"], str):
+            raise HTTPException(status_code=400, detail="lore_entries scope must be a string")
+    return entries
 
 
 def create_web_app(
@@ -124,26 +165,40 @@ def create_web_app(
     @app.post("/api/persona")
     async def api_save_persona(req: Request):
         _check_auth(req)
-        body: dict[str, Any] = await req.json()
+        body = await _json_dict(req)
+        if "display_name" in body and body["display_name"] is not None:
+            dn = body["display_name"]
+            if not isinstance(dn, str) or len(dn.strip()) > 32:
+                raise HTTPException(status_code=400, detail="display_name must be a string <= 32 chars")
+        for md_key in ("identity_md", "style_md", "examples_md", "directives"):
+            if md_key in body and body[md_key] is not None:
+                val = body[md_key]
+                if not isinstance(val, str) or len(val) > 20_000:
+                    raise HTTPException(status_code=400, detail=f"{md_key} must be a string <= 20000 chars")
+        if "lore_entries" in body and body["lore_entries"] is not None:
+            _validate_lore_entries(body["lore_entries"])
+
+        overrides = {k: v for k, v in body.items() if k != "directives"}
         if "directives" in body:
-            await store.set_kv("owner_directives", str(body.pop("directives") or ""))
-        prof = await profiles.save_overrides(body)
+            await store.set_kv("owner_directives", body["directives"] or "")
+        prof = await profiles.save_overrides(overrides)
         await bus.emit("persona.updated", display_name=prof.display_name)
         return {"ok": True, "display_name": prof.display_name}
 
     @app.post("/api/playground")
     async def api_playground(req: Request):
         _check_auth(req)
-        body = await req.json()
-        msg = str(body.get("message", "")).strip()
-        speaker = str(body.get("speaker", "Owner")).strip() or "Owner"
-        if not msg:
+        body = await _json_dict(req)
+        raw_msg = body.get("message", "")
+        if not isinstance(raw_msg, str) or not raw_msg.strip():
             raise HTTPException(status_code=400, detail="Empty message")
+        raw_speaker = body.get("speaker", "Owner")
+        speaker = raw_speaker.strip() if isinstance(raw_speaker, str) and raw_speaker.strip() else "Owner"
         res = await brain.run_text_turn(
             room_id="panel:playground",
             user_id="owner_local",
             user_name=speaker,
-            user_text=msg,
+            user_text=raw_msg.strip(),
             wake_reason="panel_playground",
         )
         return {"reply": res.text, "emotion": res.emotion, "silent": res.silent}
@@ -156,16 +211,23 @@ def create_web_app(
     @app.post("/api/people/{user_id}")
     async def api_update_person(user_id: str, req: Request):
         _check_auth(req)
-        body = await req.json()
+        if not (user_id.isascii() and user_id.isdigit()):
+            raise HTTPException(status_code=400, detail="Invalid user_id")
+        body = await _json_dict(req)
+        if "nickname" in body and not isinstance(body["nickname"], str):
+            raise HTTPException(status_code=400, detail="Invalid nickname")
+        if "impression" in body and not isinstance(body["impression"], str):
+            raise HTTPException(status_code=400, detail="Invalid impression")
+        bond_val = max(-100.0, min(1000.0, _finite_float(body["bond"], "bond"))) if "bond" in body else None
+
         await heart.get_person(user_id)
         async with store.write_tx() as conn:
             if "nickname" in body:
-                await conn.execute("UPDATE heart_person SET nickname=? WHERE user_id=?", (str(body["nickname"]), user_id))
+                await conn.execute("UPDATE heart_person SET nickname=? WHERE user_id=?", (body["nickname"], user_id))
             if "impression" in body:
-                await conn.execute("UPDATE heart_person SET impression=? WHERE user_id=?", (str(body["impression"]), user_id))
-            if "bond" in body:
-                b = max(-100.0, min(1000.0, float(body["bond"])))
-                await conn.execute("UPDATE heart_person SET bond=? WHERE user_id=?", (b, user_id))
+                await conn.execute("UPDATE heart_person SET impression=? WHERE user_id=?", (body["impression"], user_id))
+            if bond_val is not None:
+                await conn.execute("UPDATE heart_person SET bond=? WHERE user_id=?", (bond_val, user_id))
         return {"ok": True}
 
     @app.get("/api/memory")
@@ -179,11 +241,15 @@ def create_web_app(
     @app.post("/api/memory")
     async def api_add_memory(req: Request):
         _check_auth(req)
-        body = await req.json()
-        fact = str(body.get("fact", "")).strip()
-        doc_key = str(body.get("doc_key", "self")).strip() or "self"
-        if not fact:
+        body = await _json_dict(req)
+        raw_fact = body.get("fact", "")
+        if not isinstance(raw_fact, str) or not raw_fact.strip():
             raise HTTPException(status_code=400, detail="Empty note")
+        raw_key = body.get("doc_key", "self")
+        if raw_key is not None and not isinstance(raw_key, str):
+            raise HTTPException(status_code=400, detail="Invalid doc_key")
+        fact = raw_fact.strip()
+        doc_key = (raw_key or "self").strip() or "self"
         await memory.upsert_note(doc_key, fact, evidence="Added via Admin Panel")
         await memory.remember(fact, scope="global", importance=0.85)
         return {"ok": True}
@@ -191,30 +257,37 @@ def create_web_app(
     @app.post("/api/runtime")
     async def api_update_runtime(req: Request):
         _check_auth(req)
-        body = await req.json()
+        body = await _json_dict(req)
+        for bkey in ("autonomy_paused", "rvc_enabled"):
+            if bkey in body and not isinstance(body[bkey], bool):
+                raise HTTPException(status_code=400, detail=f"{bkey} must be a boolean")
+        for skey in ("llm_provider", "ollama_model", "tts_provider", "edge_tts_voice"):
+            if skey in body and (not isinstance(body[skey], str) or not body[skey].strip()):
+                raise HTTPException(status_code=400, detail=f"{skey} must be a non-empty string")
+
         if "autonomy_paused" in body:
-            await gate.set_paused(bool(body["autonomy_paused"]))
+            await gate.set_paused(body["autonomy_paused"])
         if "llm_provider" in body:
-            config.llm_provider = str(body["llm_provider"]).lower()
+            config.llm_provider = body["llm_provider"].strip().lower()
         if "ollama_model" in body:
-            config.ollama_model = str(body["ollama_model"]).strip()
+            config.ollama_model = body["ollama_model"].strip()
         if "tts_provider" in body:
-            config.tts_provider = str(body["tts_provider"]).lower()
+            config.tts_provider = body["tts_provider"].strip().lower()
         if "edge_tts_voice" in body:
-            config.edge_tts_voice = str(body["edge_tts_voice"]).strip()
+            config.edge_tts_voice = body["edge_tts_voice"].strip()
         if "rvc_enabled" in body:
-            config.rvc_enabled = bool(body["rvc_enabled"])
+            config.rvc_enabled = body["rvc_enabled"]
         await bus.emit("runtime.updated")
         return {"ok": True}
 
     @app.post("/api/sing/enqueue")
     async def api_sing_enqueue(req: Request):
         _check_auth(req)
-        body = await req.json()
-        q = str(body.get("query", "")).strip()
-        if not q:
+        body = await _json_dict(req)
+        raw_q = body.get("query", "")
+        if not isinstance(raw_q, str) or not raw_q.strip():
             raise HTTPException(status_code=400, detail="Empty song query")
-        msg = await singing.enqueue("panel", "owner_local", "Admin Panel", q)
+        msg = await singing.enqueue("panel", "owner_local", "Admin Panel", raw_q.strip())
         return {"ok": True, "message": msg}
 
     @app.post("/api/sing/skip")
