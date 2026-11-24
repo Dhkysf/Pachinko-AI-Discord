@@ -54,6 +54,7 @@ Open https://discord.com/developers/applications → select your bot application
 2. Double-click **`setup.bat`** → fill in `DISCORD_TOKEN` and `GUILD_ID` when Notepad opens → save.
 3. Double-click **`run.bat`**.
 4. Open **`http://127.0.0.1:7878`** in your browser to open **Pachinko Studio**!
+   - **Panel Auth (`.env`):** If `PANEL_TOKEN` is set, open `http://127.0.0.1:7878/?token=<PANEL_TOKEN>` (the token is saved in `sessionStorage` and stripped from the URL).
    - **Configuration (`.env`):** Set `LLM_TEMPERATURE` (`0.0`–`2.0`; leave empty to use the model/Ollama Modelfile default).
 
 ---

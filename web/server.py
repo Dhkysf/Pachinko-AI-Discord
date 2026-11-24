@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from brain.gate import ActionGate
 from brain.profile import ProfileManager
@@ -39,14 +41,31 @@ def create_web_app(
     economy: EconomyAndPlay,
     tts: TTSEngine,
 ) -> FastAPI:
-    app = FastAPI(title="Pachinko Studio", docs_url="/api/docs")
+    docs_enabled = not bool(config.panel_token)
+    app = FastAPI(
+        title="Pachinko Studio",
+        docs_url="/api/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
+    )
+    allowed_hosts = ["127.0.0.1", "localhost"]
+    if config.panel_host and config.panel_host not in ("0.0.0.0", "::"):
+        host_entry = f"[{config.panel_host}]" if ":" in config.panel_host and not config.panel_host.startswith("[") else config.panel_host
+        if host_entry.lower() not in allowed_hosts:
+            allowed_hosts.append(host_entry)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
+    allowed_origins = {f"http://{h.lower()}:{config.panel_port}" for h in allowed_hosts}
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+    def _token_ok(candidate: str) -> bool:
+        expected = config.panel_token
+        if not expected:
+            return True
+        return bool(candidate) and hmac.compare_digest(candidate, expected)
+
     def _check_auth(req: Request) -> None:
-        if not config.panel_token:
-            return
         tok = req.headers.get("Authorization", "").removeprefix("Bearer ").strip() or req.query_params.get("token", "")
-        if tok != config.panel_token:
+        if not _token_ok(tok):
             raise HTTPException(status_code=401, detail="Invalid panel token")
 
     @app.get("/")
@@ -205,6 +224,13 @@ def create_web_app(
 
     @app.websocket("/ws/live")
     async def ws_live(ws: WebSocket):
+        origin = ws.headers.get("origin")
+        if origin is not None and origin.lower() not in allowed_origins:
+            await ws.close(code=1008)
+            return
+        if not _token_ok(ws.query_params.get("token", "")):
+            await ws.close(code=1008)
+            return
         await ws.accept()
         q = bus.subscribe_stream(maxsize=250)
         try:

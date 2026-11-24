@@ -1,6 +1,26 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c]);
+}
+
+const TOKEN_KEY = 'pachinko_panel_token';
+function loadPanelToken() {
+  const url = new URL(location.href);
+  const fromUrl = url.searchParams.get('token');
+  if (fromUrl !== null) {
+    if (fromUrl) sessionStorage.setItem(TOKEN_KEY, fromUrl);
+    else sessionStorage.removeItem(TOKEN_KEY);
+    url.searchParams.delete('token');
+    history.replaceState(null, '', url.pathname + url.search + url.hash);
+  }
+  return sessionStorage.getItem(TOKEN_KEY) || '';
+}
+const PANEL_TOKEN = loadPanelToken();
+let authToastShown = false;
+
 let autonomyPaused = false;
 
 function toast(msg) {
@@ -11,10 +31,16 @@ function toast(msg) {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  if (PANEL_TOKEN) headers.Authorization = `Bearer ${PANEL_TOKEN}`;
+  const res = await fetch(path, { ...opts, headers });
+  if (res.status === 401) {
+    if (!authToastShown) {
+      authToastShown = true;
+      toast('Token panel salah atau belum diisi. Buka panel dengan ?token=...');
+    }
+    throw new Error('Unauthorized (401)');
+  }
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -52,11 +78,14 @@ function renderEmotions(heart) {
   box.innerHTML = entries
     .sort((a, b) => b[1] - a[1])
     .map(
-      ([k, v]) => `
+      ([k, v]) => {
+        const pct = Math.max(0, Math.min(100, Number(v) * 100 || 0));
+        return `
       <div class="meter-row">
-        <div class="meter-head"><span>${k}</span><span>${Math.round(v * 100)}%</span></div>
-        <div class="meter-track"><div class="meter-fill" style="width:${Math.min(100, v * 100)}%"></div></div>
-      </div>`
+        <div class="meter-head"><span>${esc(k)}</span><span>${Math.round(pct)}%</span></div>
+        <div class="meter-track"><div class="meter-fill" style="width:${pct}%"></div></div>
+      </div>`;
+      }
     )
     .join('');
 }
@@ -67,7 +96,7 @@ function appendEvent(ev) {
   const d = new Date(ev.ts * 1000).toLocaleTimeString('en-GB', { hour12: false });
   const row = document.createElement('div');
   row.className = 'event-item';
-  row.innerHTML = `<span class="event-ts">${d}</span><span class="event-topic">${ev.topic}</span><span class="event-body">${JSON.stringify(ev.payload)}</span>`;
+  row.innerHTML = `<span class="event-ts">${esc(d)}</span><span class="event-topic">${esc(ev.topic)}</span><span class="event-body">${esc(JSON.stringify(ev.payload))}</span>`;
   log.prepend(row);
   while (log.children.length > 90) log.lastChild.remove();
 }
@@ -101,7 +130,7 @@ async function loadStatus() {
   }
   (s.singing.queue || []).forEach((it, i) => qLines.push(`${i + 1}. ${it.query} — req: ${it.requester_name}`));
   $('#sing-queue-box').innerHTML = qLines.length
-    ? qLines.map((l) => `<div class="event-item"><span class="event-body">${l}</span></div>`).join('')
+    ? qLines.map((l) => `<div class="event-item"><span class="event-body">${esc(l)}</span></div>`).join('')
     : '<div style="color:var(--text-muted)">Queue is empty.</div>';
 }
 
@@ -124,20 +153,25 @@ async function loadPeople() {
   }
   tbody.innerHTML = people
     .map(
-      (p) => `
+      (p) => {
+        const bond = Number(p.bond) || 0;
+        const trust = Number(p.trust) || 0;
+        const warmth = Number(p.warmth) || 0;
+        return `
       <tr>
-        <td><strong style="color:var(--text-primary)">${p.display_name}</strong></td>
-        <td><span class="tag">${p.tier}</span></td>
+        <td><strong style="color:var(--text-primary)">${esc(p.display_name)}</strong></td>
+        <td><span class="tag">${esc(p.tier)}</span></td>
         <td>
           <div style="min-width:110px;">
-            <div>${p.bond.toFixed(1)} / 1000</div>
-            <div class="meter-track"><div class="meter-fill jade" style="width:${Math.max(2, Math.min(100, p.bond / 10))}%"></div></div>
+            <div>${bond.toFixed(1)} / 1000</div>
+            <div class="meter-track"><div class="meter-fill jade" style="width:${Math.max(2, Math.min(100, bond / 10))}%"></div></div>
           </div>
         </td>
-        <td>T: ${p.trust.toFixed(0)} · W: ${p.warmth.toFixed(2)}</td>
-        <td>${p.interactions}x</td>
-        <td>${p.impression}</td>
-      </tr>`
+        <td>T: ${trust.toFixed(0)} · W: ${warmth.toFixed(2)}</td>
+        <td>${esc(p.interactions)}x</td>
+        <td>${esc(p.impression)}</td>
+      </tr>`;
+      }
     )
     .join('');
 }
@@ -145,11 +179,11 @@ async function loadPeople() {
 async function loadMemory() {
   const { notebook, memories } = await api('/api/memory');
   $('#notebook-list').innerHTML = notebook.length
-    ? notebook.map((n) => `<div class="event-item"><span class="event-topic">${n.doc_key}</span><span class="event-body">${n.fact}</span></div>`).join('')
+    ? notebook.map((n) => `<div class="event-item"><span class="event-topic">${esc(n.doc_key)}</span><span class="event-body">${esc(n.fact)}</span></div>`).join('')
     : '<div style="color:var(--text-muted)">No notes in Living Notebook yet.</div>';
 
   $('#memories-list').innerHTML = memories.length
-    ? memories.map((m) => `<div class="event-item"><span class="event-topic">${m.scope}</span><span class="event-body">${m.content}</span></div>`).join('')
+    ? memories.map((m) => `<div class="event-item"><span class="event-topic">${esc(m.scope)}</span><span class="event-body">${esc(m.content)}</span></div>`).join('')
     : '<div style="color:var(--text-muted)">No episodic memories yet.</div>';
 }
 
@@ -197,7 +231,7 @@ async function sendPlayground() {
   if (!msg) return;
   inp.value = '';
   const box = $('#playground-log');
-  box.innerHTML += `<div class="chat-msg"><strong>You:</strong> ${msg}</div>`;
+  box.innerHTML += `<div class="chat-msg"><strong>You:</strong> ${esc(msg)}</div>`;
   box.scrollTop = box.scrollHeight;
   try {
     const res = await api('/api/playground', {
@@ -205,11 +239,11 @@ async function sendPlayground() {
       body: JSON.stringify({ message: msg }),
     });
     const reply = res.silent ? '*(chose silence / <silence/>)*' : res.reply;
-    box.innerHTML += `<div class="chat-msg self"><strong>[${res.emotion}]:</strong> ${reply}</div>`;
+    box.innerHTML += `<div class="chat-msg self"><strong>[${esc(res.emotion)}]:</strong> ${esc(reply)}</div>`;
     box.scrollTop = box.scrollHeight;
     loadStatus();
   } catch (e) {
-    box.innerHTML += `<div class="chat-msg" style="color:var(--accent-coral)">Error: ${e.message}</div>`;
+    box.innerHTML += `<div class="chat-msg" style="color:var(--accent-coral)">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -261,7 +295,8 @@ $('#btn-song-skip').addEventListener('click', async () => {
 /* WebSocket Live Stream */
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${proto}//${location.host}/ws/live`);
+  const qs = PANEL_TOKEN ? `?token=${encodeURIComponent(PANEL_TOKEN)}` : '';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/live${qs}`);
   ws.onopen = () => {
     $('#ws-dot').classList.add('live');
     $('#ws-state').textContent = 'Connected';
@@ -273,16 +308,24 @@ function connectWS() {
       loadStatus();
     }
   };
-  ws.onclose = () => {
+  ws.onclose = (e) => {
     $('#ws-dot').classList.remove('live');
+    if (e && e.code === 1008) {
+      $('#ws-state').textContent = 'Auth failed';
+      return;
+    }
     $('#ws-state').textContent = 'Reconnecting...';
     setTimeout(connectWS, 3000);
   };
 }
 
 (async function init() {
-  await loadStatus();
-  const { events } = await api('/api/events?limit=40');
-  events.forEach(appendEvent);
-  connectWS();
+  try {
+    await loadStatus();
+    const { events } = await api('/api/events?limit=40');
+    events.forEach(appendEvent);
+    connectWS();
+  } catch (e) {
+    console.error(e);
+  }
 })();
