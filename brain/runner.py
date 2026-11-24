@@ -25,6 +25,12 @@ _PREFIX_STRIP_RE = re.compile(r"^\[[^\]]+\]:\s*")
 _LLM_ERROR_REPLY = "Otakku lagi error, coba lagi bentar ya"
 
 
+def _assistant_tool_turn(text: str | None, tool_calls: list) -> str:
+    if text and text.strip():
+        return text.strip()
+    return f"[memanggil tool: {', '.join(tc.name for tc in tool_calls)}]"
+
+
 def clean_for_speech(sentence: str) -> tuple[str, list[str]]:
     """Separate spoken text from URLs (URLs are sent to text chat as `aside`)."""
     urls = _URL_RE.findall(sentence)
@@ -135,13 +141,11 @@ class BrainRunner:
                 wake_reason=wake_reason,
             )
 
-            # At most 2 tool-call rounds
+            # At most 1 tool-call round, then one final answer without tools
             try:
                 resp = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=False)
-                for _ in range(2):
-                    if not resp.tool_calls:
-                        break
-                    messages.append({"role": "assistant", "content": resp.text or ""})
+                if resp.tool_calls:
+                    messages.append({"role": "assistant", "content": _assistant_tool_turn(resp.text, resp.tool_calls)})
                     for tc in resp.tool_calls:
                         await self.bus.emit("brain.tool_call", tool=tc.name, args=tc.arguments, user=user_name)
                         out = await self.tools.execute(
@@ -213,7 +217,7 @@ class BrainRunner:
                     log.exception("LLM tool pre-check failed in voice turn")
                     return
                 if first.tool_calls:
-                    messages.append({"role": "assistant", "content": first.text or ""})
+                    messages.append({"role": "assistant", "content": _assistant_tool_turn(first.text, first.tool_calls)})
                     for tc in first.tool_calls:
                         await self.bus.emit("brain.tool_call", tool=tc.name, args=tc.arguments, user=user_name)
                         out = await self.tools.execute(

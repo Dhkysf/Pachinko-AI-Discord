@@ -1,8 +1,10 @@
 .venv/
 .vscode/
 .env
+.codegraph/
 __pycache__/
 *.pyc
 data/
 models/
 AUDIT.md
+AUDIT-old.md

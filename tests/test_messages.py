@@ -109,6 +109,23 @@ class TestAssembleMessages(unittest.TestCase):
         msgs2 = assemble_messages(**args2)
         self.assertEqual(msgs1[0], msgs2[0])
 
+    def test_assistant_messages_are_indonesian_not_english(self) -> None:
+        args = _make_args(modality="text")
+        args["history"] = [
+            {"role": "user", "speaker_name": "Budi", "content": "Pagi!"},
+            {"role": "assistant", "content": "Sebentar ya...", "interrupted": True},
+        ]
+        msgs = assemble_messages(**args)
+        assistant_msgs = [m["content"] for m in msgs if m["role"] == "assistant"]
+        self.assertIn("Oke, aku inget konteks lawan bicara dan catatan di atas.", assistant_msgs)
+        self.assertTrue(
+            any(c.endswith(" [terpotong karena lawan bicara menyela]") for c in assistant_msgs),
+            f"Expected Indonesian interruption suffix in {assistant_msgs}",
+        )
+        for content in assistant_msgs:
+            self.assertNotIn("I remember the speaker context and notes above.", content)
+            self.assertNotIn(" [interrupted because the speaker cut in]", content)
+
 
 class TestNormalizeMessages(unittest.TestCase):
     def test_folds_later_system_into_next_user(self) -> None:

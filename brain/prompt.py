@@ -84,7 +84,7 @@ def assemble_messages(
         context_blocks.append(data_block("recalled_memory", mem_lines, title="Recalled Memories"))
 
     messages.append({"role": "user", "content": "\n\n".join(context_blocks)})
-    messages.append({"role": "assistant", "content": "I remember the speaker context and notes above."})
+    messages.append({"role": "assistant", "content": "Oke, aku inget konteks lawan bicara dan catatan di atas."})
 
     # Block 5: Conversation History (including marker if previously cut off by barge-in)
     for turn in history[-18:]:
@@ -95,7 +95,7 @@ def assemble_messages(
             messages.append({"role": "user", "content": f"[{sp}]: {body}"})
         elif role == "assistant":
             txt = turn["heard_content"] if (turn.get("interrupted") and turn.get("heard_content")) else turn["content"]
-            suffix = " [interrupted because the speaker cut in]" if turn.get("interrupted") else ""
+            suffix = " [terpotong karena lawan bicara menyela]" if turn.get("interrupted") else ""
             messages.append({"role": "assistant", "content": f"{txt}{suffix}"})
 
     # Blocks 6 & 7: Dynamic Tail (<now>, <style_note> Lorebook, & <turn>) + New Message

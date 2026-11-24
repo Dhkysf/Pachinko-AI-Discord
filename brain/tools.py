@@ -1,18 +1,17 @@
-"""Safe Tool Registry callable by the Character Brain (Web Search, Web Read, Memory Notes, Reminders, Songs)."""
+"""Safe Tool Registry callable by the Character Brain (Web Search, Memory Notes, Reminders, Songs)."""
 from __future__ import annotations
 
 import asyncio
-import html
 import json
-import re
+import logging
 import time
 from typing import Any, Callable, Awaitable
-
-import httpx
 
 from brain.gate import ActionGate
 from core.safety import data_block
 from memory.manager import MemoryManager
+
+log = logging.getLogger("brain.tools")
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -72,6 +71,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 VOICE_TOOL_NAMES = {"web_search", "remember_note", "set_reminder", "queue_song"}
+_ALLOWED_TOOLS: frozenset[str] = frozenset(t["function"]["name"] for t in TOOL_SCHEMAS)
 
 
 class ToolBox:
@@ -97,6 +97,10 @@ class ToolBox:
         user_id: str,
         user_name: str,
     ) -> str:
+        if name not in _ALLOWED_TOOLS:
+            log.warning("Rejected unadvertised tool call: %r (user=%s)", name, user_name)
+            return f"Unknown tool '{name}'."
+
         if isinstance(raw_args, str):
             try:
                 args = json.loads(raw_args) if raw_args.strip() else {}
@@ -113,8 +117,6 @@ class ToolBox:
 
         if name == "web_search":
             return await self._web_search(str(args.get("query", "")))
-        if name == "web_read":
-            return await self._web_read(str(args.get("url", "")))
         if name == "remember_note":
             fact = str(args.get("fact", "")).strip()
             target = str(args.get("target", "user")).strip().lower()
@@ -155,16 +157,3 @@ class ToolBox:
             return "No results found."
         lines = [f"- {it.get('title', '')}: {it.get('body', '')} ({it.get('href', '')})" for it in items]
         return data_block("web_search", "\n".join(lines), title=query, max_chars=3500)
-
-    async def _web_read(self, url: str) -> str:
-        if not url.startswith(("http://", "https://")):
-            return "Invalid URL."
-        try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0 PachinkoReader/1.0"})
-                raw = re.sub(r"<(script|style).*?>.*?</\1>", " ", r.text, flags=re.S | re.I)
-                text = html.unescape(re.sub(r"<[^>]+>", " ", raw))
-                text = re.sub(r"\s+", " ", text).strip()
-                return data_block("web_page", text, title=url[:60], max_chars=5000)
-        except Exception as e:
-            return f"Failed to read page: {e}"

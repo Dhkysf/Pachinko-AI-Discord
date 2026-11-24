@@ -31,7 +31,6 @@ class PendingApproval:
 
 RISK_LEVELS = {
     "web_search": "low",
-    "web_read": "low",
     "remember_note": "low",
     "set_reminder": "medium",
     "queue_song": "medium",

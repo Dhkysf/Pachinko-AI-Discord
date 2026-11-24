@@ -260,6 +260,81 @@ class TestNoToolsRetryAndErrors(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res.silent)
         self.assertEqual(res.text, "")
 
+    async def test_run_text_turn_tool_round_no_empty_assistant_and_single_round(self) -> None:
+        import copy
+        from brain.llm import LLMResponse
+        from brain.tools import TOOL_SCHEMAS
+
+        calls: list[tuple[list[dict[str, Any]], Any]] = []
+
+        async def fake_complete(messages: list[dict[str, Any]], tools: Any = None, fast_voice: bool = False):
+            calls.append((copy.deepcopy(messages), tools))
+            if len(calls) == 1:
+                return LLMResponse(text="", tool_calls=[LLMToolCall("set_reminder", {"minutes": 1, "note": "minum"})])
+            return LLMResponse(
+                text="Siap, udah aku ingetin ya!",
+                tool_calls=[LLMToolCall("web_search", {"query": "ignored"})],
+            )
+
+        llm = types.SimpleNamespace(
+            complete_with_tools=fake_complete,
+            supports_tools=MagicMock(return_value=True),
+        )
+        runner = self._make_runner(llm)
+        res = await runner.run_text_turn(room_id="r1", user_id="u1", user_name="Budi", user_text="ingatkan aku minum")
+        self.assertEqual(res.text, "Siap, udah aku ingetin ya!")
+        self.assertEqual(len(calls), 2)
+        self.assertIs(calls[0][1], TOOL_SCHEMAS)
+        self.assertIsNone(calls[1][1])
+        assistant_msgs = [m["content"] for m in calls[1][0] if m["role"] == "assistant"]
+        self.assertTrue(all(c.strip() != "" for c in assistant_msgs))
+        self.assertIn("[memanggil tool: set_reminder]", assistant_msgs)
+
+    async def test_stream_voice_turn_tool_round_no_empty_assistant(self) -> None:
+        import copy
+        from brain.llm import LLMResponse
+
+        seen_messages: list[dict[str, Any]] = []
+
+        async def fake_stream(messages: list[dict[str, Any]], fast_voice: bool = True):
+            seen_messages.extend(copy.deepcopy(messages))
+            yield "Siap, udah aku ingetin ya!"
+
+        llm = types.SimpleNamespace(
+            complete_with_tools=AsyncMock(
+                return_value=LLMResponse(text="", tool_calls=[LLMToolCall("set_reminder", {"minutes": 1, "note": "minum"})])
+            ),
+            stream_text=fake_stream,
+            supports_tools=MagicMock(return_value=True),
+        )
+        runner = self._make_runner(llm)
+        items = [x async for x in runner.stream_voice_turn(room_id="r1", user_id="u1", user_name="Budi", user_text="ingatkan aku minum 1 menit lagi")]
+        self.assertTrue(items)
+        assistant_msgs = [m["content"] for m in seen_messages if m["role"] == "assistant"]
+        self.assertTrue(all(c.strip() != "" for c in assistant_msgs))
+        self.assertIn("[memanggil tool: set_reminder]", assistant_msgs)
+
+
+class TestToolBoxAllowlist(unittest.IsolatedAsyncioTestCase):
+    async def test_web_read_removed_and_unknown_tools_rejected(self) -> None:
+        from brain.gate import RISK_LEVELS
+        from brain.tools import ToolBox
+
+        self.assertFalse(hasattr(ToolBox, "_web_read"))
+        self.assertNotIn("web_read", RISK_LEVELS)
+
+        gate = types.SimpleNamespace(check=AsyncMock(return_value=(True, "ok")))
+        box = ToolBox(memory=types.SimpleNamespace(), gate=gate)  # type: ignore[arg-type]
+
+        for bad_name, args in (
+            ("web_read", {"url": "http://127.0.0.1:7878/"}),
+            ("delete_db", {}),
+        ):
+            with self.assertLogs("brain.tools", level="WARNING"):
+                out = await box.execute(bad_name, args, room_id="r1", user_id="u1", user_name="Budi")
+            self.assertTrue(out.startswith("Unknown tool"), f"Expected Unknown tool for {bad_name}, got {out!r}")
+        gate.check.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
