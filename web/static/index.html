@@ -110,12 +110,12 @@
             <h2>Live Chat Test (Sandbox Playground)</h2>
             <div id="playground-log" class="chat-box"></div>
             <div style="display:flex; gap:8px;">
-              <input type="text" id="inp-playground" placeholder="Type something to test character style...">
+              <input type="text" id="inp-playground" aria-label="Sandbox playground message" placeholder="Type something to test character style...">
               <button id="btn-send-playground" class="btn btn-primary">Send</button>
             </div>
 
             <h2 style="margin-top:24px;">Lorebook (Keyword World Info)</h2>
-            <textarea id="inp-lore-json" rows="9" placeholder="JSON array of lore entries"></textarea>
+            <textarea id="inp-lore-json" aria-label="Lorebook JSON entries" rows="9" placeholder="JSON array of lore entries"></textarea>
           </div>
         </div>
       </section>
@@ -197,7 +197,7 @@
           <div class="panel-box">
             <h2>Karaoke / AI Singing Queue</h2>
             <div style="display:flex; gap:8px; margin-bottom:12px;">
-              <input type="text" id="inp-song-query" placeholder="Song title or YouTube URL...">
+              <input type="text" id="inp-song-query" aria-label="Song title or YouTube URL" placeholder="Song title or YouTube URL...">
               <button id="btn-song-add" class="btn btn-primary">Enqueue</button>
               <button id="btn-song-skip" class="btn btn-danger">Skip</button>
             </div>
@@ -208,7 +208,7 @@
     </main>
   </div>
 
-  <div id="toast" class="toast">Saved</div>
+  <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
   <script src="/static/panel.js"></script>
 </body>
 </html>

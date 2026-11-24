@@ -22,12 +22,14 @@ const PANEL_TOKEN = loadPanelToken();
 let authToastShown = false;
 
 let autonomyPaused = false;
+let toastTimer = null;
 
 function toast(msg) {
   const el = $('#toast');
   el.textContent = msg;
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2400);
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
 }
 
 async function api(path, opts = {}) {
@@ -41,8 +43,28 @@ async function api(path, opts = {}) {
     }
     throw new Error('Unauthorized (401)');
   }
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const raw = await res.text();
+    let msg = raw || `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.detail === 'string') msg = parsed.detail;
+    } catch (_) {}
+    throw new Error(msg);
+  }
   return res.json();
+}
+
+async function runAction(btn, fn) {
+  if (btn) btn.disabled = true;
+  try {
+    await fn();
+  } catch (e) {
+    console.error(e);
+    toast(`Error: ${e.message || e}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 /* Tab Navigation */
@@ -62,9 +84,13 @@ $$('.nav-btn').forEach((btn) => {
     const tab = btn.dataset.tab;
     $(`#tab-${tab}`).classList.add('active');
     $('#page-heading').textContent = HEADINGS[tab] || 'Pachinko Studio';
-    if (tab === 'persona') loadPersona();
-    if (tab === 'bonds') loadPeople();
-    if (tab === 'memory') loadMemory();
+    const onTabErr = (e) => {
+      console.error(e);
+      toast(`Error: ${e.message || e}`);
+    };
+    if (tab === 'persona') loadPersona().catch(onTabErr);
+    if (tab === 'bonds') loadPeople().catch(onTabErr);
+    if (tab === 'memory') loadMemory().catch(onTabErr);
   });
 });
 
@@ -107,7 +133,7 @@ async function loadStatus() {
   $('#stat-emotion').textContent = s.heart.dominant;
   $('#stat-valence').textContent = `Valence ${s.heart.valence >= 0 ? '+' : ''}${s.heart.valence} · Energy ${Math.round(s.heart.energy * 100)}%`;
   $('#stat-llm').textContent = s.runtime.llm_provider;
-  $('#stat-llm-model').textContent = s.runtime.ollama_model;
+  $('#stat-llm-model').textContent = s.runtime.llm_model || s.runtime.ollama_model;
   $('#stat-tts').textContent = s.runtime.tts_provider;
   $('#stat-vram').textContent = s.runtime.vram_busy_with
     ? `Busy: ${s.runtime.vram_busy_with}`
@@ -188,44 +214,52 @@ async function loadMemory() {
 }
 
 /* Actions */
-$('#btn-refresh-all').addEventListener('click', () => {
-  loadStatus();
-  toast('Status refreshed');
-});
+$('#btn-refresh-all').addEventListener('click', (e) =>
+  runAction(e.currentTarget, async () => {
+    await loadStatus();
+    toast('Status refreshed');
+  })
+);
 
-$('#btn-toggle-autonomy').addEventListener('click', async () => {
-  await api('/api/runtime', {
-    method: 'POST',
-    body: JSON.stringify({ autonomy_paused: !autonomyPaused }),
-  });
-  await loadStatus();
-  toast(autonomyPaused ? 'Autonomy paused' : 'Autonomy active');
-});
+$('#btn-toggle-autonomy').addEventListener('click', (e) =>
+  runAction(e.currentTarget, async () => {
+    await api('/api/runtime', {
+      method: 'POST',
+      body: JSON.stringify({ autonomy_paused: !autonomyPaused }),
+    });
+    await loadStatus();
+    toast(autonomyPaused ? 'Autonomy paused' : 'Autonomy active');
+  })
+);
 
-$('#btn-save-persona').addEventListener('click', async () => {
-  let lore = null;
-  try {
-    lore = JSON.parse($('#inp-lore-json').value || '[]');
-  } catch (e) {
-    alert('Invalid Lorebook JSON format: ' + e.message);
-    return;
-  }
-  await api('/api/persona', {
-    method: 'POST',
-    body: JSON.stringify({
-      display_name: $('#inp-char-name').value,
-      identity_md: $('#inp-identity').value,
-      style_md: $('#inp-style').value,
-      examples_md: $('#inp-examples').value,
-      directives: $('#inp-directives').value,
-      lore_entries: lore,
-    }),
-  });
-  await loadStatus();
-  toast('Persona & Lorebook applied live!');
-});
+$('#btn-save-persona').addEventListener('click', (e) =>
+  runAction(e.currentTarget, async () => {
+    let lore = null;
+    try {
+      lore = JSON.parse($('#inp-lore-json').value || '[]');
+    } catch (err) {
+      toast('Invalid Lorebook JSON: ' + err.message);
+      return;
+    }
+    await api('/api/persona', {
+      method: 'POST',
+      body: JSON.stringify({
+        display_name: $('#inp-char-name').value,
+        identity_md: $('#inp-identity').value,
+        style_md: $('#inp-style').value,
+        examples_md: $('#inp-examples').value,
+        directives: $('#inp-directives').value,
+        lore_entries: lore,
+      }),
+    });
+    await loadStatus();
+    toast('Persona & Lorebook applied live!');
+  })
+);
 
 async function sendPlayground() {
+  const btn = $('#btn-send-playground');
+  if (btn && btn.disabled) return;
   const inp = $('#inp-playground');
   const msg = inp.value.trim();
   if (!msg) return;
@@ -233,18 +267,21 @@ async function sendPlayground() {
   const box = $('#playground-log');
   box.innerHTML += `<div class="chat-msg"><strong>You:</strong> ${esc(msg)}</div>`;
   box.scrollTop = box.scrollHeight;
-  try {
-    const res = await api('/api/playground', {
-      method: 'POST',
-      body: JSON.stringify({ message: msg }),
-    });
-    const reply = res.silent ? '*(chose silence / <silence/>)*' : res.reply;
-    box.innerHTML += `<div class="chat-msg self"><strong>[${esc(res.emotion)}]:</strong> ${esc(reply)}</div>`;
-    box.scrollTop = box.scrollHeight;
-    loadStatus();
-  } catch (e) {
-    box.innerHTML += `<div class="chat-msg" style="color:var(--accent-coral)">Error: ${esc(e.message)}</div>`;
-  }
+  await runAction(btn, async () => {
+    try {
+      const res = await api('/api/playground', {
+        method: 'POST',
+        body: JSON.stringify({ message: msg }),
+      });
+      const reply = res.silent ? '*(chose silence / <silence/>)*' : res.reply;
+      box.innerHTML += `<div class="chat-msg self"><strong>[${esc(res.emotion)}]:</strong> ${esc(reply)}</div>`;
+      box.scrollTop = box.scrollHeight;
+      await loadStatus();
+    } catch (e) {
+      box.innerHTML += `<div class="chat-msg" style="color:var(--accent-coral)">Error: ${esc(e.message)}</div>`;
+      throw e;
+    }
+  });
 }
 
 $('#btn-send-playground').addEventListener('click', sendPlayground);
@@ -252,45 +289,53 @@ $('#inp-playground').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') sendPlayground();
 });
 
-$('#btn-add-memory').addEventListener('click', async () => {
-  const fact = $('#inp-mem-fact').value.trim();
-  if (!fact) return;
-  await api('/api/memory', {
-    method: 'POST',
-    body: JSON.stringify({ doc_key: $('#inp-mem-doc').value.trim(), fact }),
-  });
-  $('#inp-mem-fact').value = '';
-  await loadMemory();
-  toast('Note saved to Notebook!');
-});
+$('#btn-add-memory').addEventListener('click', (e) =>
+  runAction(e.currentTarget, async () => {
+    const fact = $('#inp-mem-fact').value.trim();
+    if (!fact) return;
+    await api('/api/memory', {
+      method: 'POST',
+      body: JSON.stringify({ doc_key: $('#inp-mem-doc').value.trim(), fact }),
+    });
+    $('#inp-mem-fact').value = '';
+    await loadMemory();
+    toast('Note saved to Notebook!');
+  })
+);
 
-$('#btn-save-runtime').addEventListener('click', async () => {
-  await api('/api/runtime', {
-    method: 'POST',
-    body: JSON.stringify({
-      llm_provider: $('#sel-llm-provider').value,
-      ollama_model: $('#inp-ollama-model').value,
-      tts_provider: $('#sel-tts-provider').value,
-      edge_tts_voice: $('#inp-edge-voice').value,
-    }),
-  });
-  await loadStatus();
-  toast('AI engine settings applied!');
-});
+$('#btn-save-runtime').addEventListener('click', (e) =>
+  runAction(e.currentTarget, async () => {
+    await api('/api/runtime', {
+      method: 'POST',
+      body: JSON.stringify({
+        llm_provider: $('#sel-llm-provider').value,
+        ollama_model: $('#inp-ollama-model').value,
+        tts_provider: $('#sel-tts-provider').value,
+        edge_tts_voice: $('#inp-edge-voice').value,
+      }),
+    });
+    await loadStatus();
+    toast('AI engine settings applied!');
+  })
+);
 
-$('#btn-song-add').addEventListener('click', async () => {
-  const q = $('#inp-song-query').value.trim();
-  if (!q) return;
-  const res = await api('/api/sing/enqueue', { method: 'POST', body: JSON.stringify({ query: q }) });
-  $('#inp-song-query').value = '';
-  await loadStatus();
-  toast(res.message);
-});
+$('#btn-song-add').addEventListener('click', (e) =>
+  runAction(e.currentTarget, async () => {
+    const q = $('#inp-song-query').value.trim();
+    if (!q) return;
+    const res = await api('/api/sing/enqueue', { method: 'POST', body: JSON.stringify({ query: q }) });
+    $('#inp-song-query').value = '';
+    await loadStatus();
+    toast(res.message);
+  })
+);
 
-$('#btn-song-skip').addEventListener('click', async () => {
-  await api('/api/sing/skip', { method: 'POST', body: '{}' });
-  toast('Song skipped');
-});
+$('#btn-song-skip').addEventListener('click', (e) =>
+  runAction(e.currentTarget, async () => {
+    await api('/api/sing/skip', { method: 'POST', body: '{}' });
+    toast('Song skipped');
+  })
+);
 
 /* WebSocket Live Stream */
 function connectWS() {

@@ -126,6 +126,25 @@ class TestPanelSecurity(unittest.TestCase):
         client_open = self._client(_make_app())
         self.assertEqual(client_open.get("/api/docs").status_code, 200)
 
+    def test_api_status_active_llm_model(self):
+        config.panel_token = ""
+        orig_provider = config.llm_provider
+        try:
+            client = self._client(_make_app())
+            for provider, expected in (
+                ("ollama", config.ollama_model),
+                ("openai_compat", config.openai_model),
+                ("gemini", config.gemini_model),
+            ):
+                config.llm_provider = provider
+                res = client.get("/api/status")
+                self.assertEqual(res.status_code, 200)
+                data = res.json()
+                self.assertEqual(data["runtime"]["llm_model"], expected)
+                self.assertNotIn("pending_approvals", data["autonomy"])
+        finally:
+            config.llm_provider = orig_provider
+
 
 if __name__ == "__main__":
     unittest.main()
