@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Miyoria OBS Stream Overlay</title>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: transparent;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      color: #f8fafc;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+    /* Audio Reactive Bars di tepi kiri */
+    .voice-bars {
+      position: fixed;
+      left: 28px;
+      bottom: 42px;
+      display: flex;
+      align-items: flex-end;
+      gap: 5px;
+      height: 54px;
+    }
+    .vbar {
+      width: 6px;
+      height: 8px;
+      border-radius: 99px;
+      background: hsl(36, 92%, 58%);
+      transition: height 0.06s linear;
+    }
+    /* Kotak Subtitle Typewriter */
+    .subtitle-wrap {
+      position: fixed;
+      left: 96px;
+      right: 64px;
+      bottom: 36px;
+      max-width: 980px;
+      background: hsla(220, 22%, 8%, 0.84);
+      border-left: 4px solid hsl(36, 92%, 58%);
+      border-radius: 12px;
+      padding: 16px 24px;
+      backdrop-filter: blur(8px);
+      opacity: 0;
+      transform: translateY(10px);
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+    .subtitle-wrap.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    .sub-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.85rem;
+      color: hsl(36, 92%, 62%);
+      font-weight: 700;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .sub-text {
+      font-size: 1.35rem;
+      font-weight: 600;
+      line-height: 1.4;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.65);
+    }
+    /* Karaoke Banner di bagian atas */
+    .karaoke-box {
+      position: fixed;
+      top: 32px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: hsla(220, 22%, 8%, 0.86);
+      border-bottom: 3px solid hsl(166, 68%, 46%);
+      padding: 14px 32px;
+      border-radius: 14px;
+      text-align: center;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    .karaoke-box.visible { opacity: 1; }
+    .k-title { font-size: 0.8rem; color: hsl(166, 68%, 55%); margin-bottom: 4px; }
+    .k-now { font-size: 1.45rem; font-weight: 700; color: #fff; }
+    .k-next { font-size: 0.95rem; color: #94a3b8; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div class="karaoke-box" id="karaoke-box">
+    <div class="k-title" id="k-title"></div>
+    <div class="k-now" id="k-now"></div>
+    <div class="k-next" id="k-next"></div>
+  </div>
+
+  <div class="voice-bars" id="voice-bars">
+    <div class="vbar"></div><div class="vbar"></div><div class="vbar"></div>
+    <div class="vbar"></div><div class="vbar"></div><div class="vbar"></div>
+  </div>
+
+  <div class="subtitle-wrap" id="sub-box">
+    <div class="sub-header"><span id="sub-speaker">Aira</span> · <span id="sub-emo">neutral</span></div>
+    <div class="sub-text" id="sub-text"></div>
+  </div>
+
+  <script>
+    const bars = document.querySelectorAll('.vbar');
+    const subBox = document.getElementById('sub-box');
+    const subText = document.getElementById('sub-text');
+    let hideTimer = null;
+    let typeTimer = null;
+
+    function typewrite(text) {
+      clearInterval(typeTimer);
+      subText.textContent = '';
+      let i = 0;
+      typeTimer = setInterval(() => {
+        subText.textContent += text.charAt(i);
+        i++;
+        if (i >= text.length) clearInterval(typeTimer);
+      }, 22);
+    }
+
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/ws/live`);
+      ws.onmessage = (e) => {
+        const ev = JSON.parse(e.data);
+        if (ev.topic === 'stage.lipsync') {
+          const { rms = 0, vowel_open = 0, vowel_wide = 0 } = ev.payload;
+          const heights = [rms * 0.6, vowel_open, rms, vowel_wide, rms * 0.85, vowel_open * 0.5];
+          bars.forEach((b, idx) => {
+            b.style.height = `${Math.max(6, Math.min(54, Math.round(heights[idx] * 54)))}px`;
+          });
+        } else if (ev.topic === 'overlay.subtitle') {
+          document.getElementById('sub-speaker').textContent = ev.payload.speaker || 'Aira';
+          document.getElementById('sub-emo').textContent = ev.payload.emotion || 'neutral';
+          subBox.classList.add('visible');
+          typewrite(ev.payload.text || '');
+          clearTimeout(hideTimer);
+          hideTimer = setTimeout(() => subBox.classList.remove('visible'), 7500);
+        } else if (ev.topic === 'overlay.karaoke') {
+          const kb = document.getElementById('karaoke-box');
+          if (!ev.payload.line) {
+            kb.classList.remove('visible');
+          } else {
+            kb.classList.add('visible');
+            document.getElementById('k-title').textContent = ev.payload.title || '';
+            document.getElementById('k-now').textContent = ev.payload.line || '';
+            document.getElementById('k-next').textContent = ev.payload.next_line || '';
+          }
+        }
+      };
+      ws.onclose = () => setTimeout(connect, 2500);
+    }
+    connect();
+  </script>
+</body>
+</html>

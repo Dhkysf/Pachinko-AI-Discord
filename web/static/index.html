@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Panel Kontrol Karakter AI Voice & VTuber Lokal Miyoria-Py">
+  <title>Miyoria-Py Control Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/panel.css">
+</head>
+<body>
+  <div class="studio-shell">
+    <aside class="nav-rail">
+      <div class="brand-block">
+        <div class="brand-title" id="brand-char-name">Miyoria Studio</div>
+        <div class="brand-sub">Local AI Character Core</div>
+      </div>
+
+      <nav aria-label="Menu Utama">
+        <ul class="nav-list">
+          <li><button id="nav-overview" class="nav-btn active" data-tab="overview">Monitor & Pikiran</button></li>
+          <li><button id="nav-persona" class="nav-btn" data-tab="persona">Persona & Playground</button></li>
+          <li><button id="nav-bonds" class="nav-btn" data-tab="bonds">Hubungan & Bond</button></li>
+          <li><button id="nav-memory" class="nav-btn" data-tab="memory">Memori & Notebook</button></li>
+          <li><button id="nav-voice" class="nav-btn" data-tab="voice">Suara, Lagu & Stage</button></li>
+        </ul>
+      </nav>
+
+      <div class="rail-footer">
+        <div class="status-line">
+          <span><span id="ws-dot" class="dot"></span>Live Bus</span>
+          <span id="ws-state">Menghubungkan</span>
+        </div>
+        <div class="status-line">
+          <span>GPU Target</span>
+          <span id="gpu-label">RX 9070 16GB</span>
+        </div>
+        <div style="margin-top:8px;">
+          <a href="/overlay" target="_blank" class="btn" style="width:100%; font-size:0.78rem;">Buka OBS Overlay ↗</a>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="top-bar">
+        <h1 id="page-heading">Monitor & Pikiran Karakter</h1>
+        <div class="top-actions">
+          <button id="btn-toggle-autonomy" class="btn">Memuat Otonomi...</button>
+          <button id="btn-refresh-all" class="btn">Muat Ulang</button>
+        </div>
+      </header>
+
+      <!-- TAB 1: OVERVIEW -->
+      <section id="tab-overview" class="tab-panel active">
+        <div class="grid-3">
+          <div class="panel-box">
+            <div class="metric-label">Ekspresi & Suasana Hati</div>
+            <div class="metric-value" id="stat-emotion">neutral</div>
+            <div style="font-size:0.82rem; color:var(--text-secondary); margin-top:4px;" id="stat-valence">Valence +0.25 · Energi 80%</div>
+          </div>
+          <div class="panel-box">
+            <div class="metric-label">Mesin Otak (LLM)</div>
+            <div class="metric-value" id="stat-llm">ollama</div>
+            <div style="font-size:0.82rem; color:var(--text-secondary); margin-top:4px;" id="stat-llm-model">qwen3:8b</div>
+          </div>
+          <div class="panel-box">
+            <div class="metric-label">Suara & VRAM Lease</div>
+            <div class="metric-value" id="stat-tts">edge</div>
+            <div style="font-size:0.82rem; color:var(--text-secondary); margin-top:4px;" id="stat-vram">VRAM Siaga (16 GB)</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="panel-box">
+            <h2>Spektrum Emosi Aktif (Heart Engine)</h2>
+            <div id="emotion-bars"></div>
+          </div>
+          <div class="panel-box">
+            <h2>Aliran Keputusan & Kejadian Real-Time</h2>
+            <div id="live-event-log" class="event-log"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: PERSONA & PLAYGROUND -->
+      <section id="tab-persona" class="tab-panel">
+        <div class="grid-2">
+          <div class="panel-box">
+            <h2>Editor Karakter (Hot-Reload Tanpa Restart)</h2>
+            <label class="field-label" for="inp-char-name">Nama Panggilan Karakter</label>
+            <input type="text" id="inp-char-name" placeholder="Aira">
+
+            <label class="field-label" for="inp-identity">Identitas & Kepribadian (identity.md)</label>
+            <textarea id="inp-identity" rows="7"></textarea>
+
+            <label class="field-label" for="inp-style">Gaya Bicara & Aturan (style.md)</label>
+            <textarea id="inp-style" rows="6"></textarea>
+
+            <label class="field-label" for="inp-examples">Contoh Dialog (examples.md)</label>
+            <textarea id="inp-examples" rows="6"></textarea>
+
+            <label class="field-label" for="inp-directives">Arahan Khusus Owner</label>
+            <textarea id="inp-directives" rows="3" placeholder="Misal: Jangan bahas spoiler anime X"></textarea>
+
+            <div style="margin-top:16px;">
+              <button id="btn-save-persona" class="btn btn-primary">Simpan & Terapkan Live</button>
+            </div>
+          </div>
+
+          <div class="panel-box">
+            <h2>Uji Ngobrol Langsung (Sandbox Playground)</h2>
+            <div id="playground-log" class="chat-box"></div>
+            <div style="display:flex; gap:8px;">
+              <input type="text" id="inp-playground" placeholder="Ketik sesuatu buat ngetes gaya bicara karakter...">
+              <button id="btn-send-playground" class="btn btn-primary">Kirim</button>
+            </div>
+
+            <h2 style="margin-top:24px;">Lorebook (World Info Kata Kunci)</h2>
+            <textarea id="inp-lore-json" rows="9" placeholder="JSON daftar lore entries"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: BONDS -->
+      <section id="tab-bonds" class="tab-panel">
+        <div class="panel-box">
+          <h2>Daftar Kedekatan Member (9-Axis Relationship & Bond Ladder)</h2>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Member</th>
+                <th>Tingkat Bond</th>
+                <th>Skor</th>
+                <th>Trust / Warmth</th>
+                <th>Interaksi</th>
+                <th>Kesan Karakter</th>
+              </tr>
+            </thead>
+            <tbody id="people-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- TAB 4: MEMORY -->
+      <section id="tab-memory" class="tab-panel">
+        <div class="grid-2">
+          <div class="panel-box">
+            <h2>Tambah Catatan Ingatan Manual</h2>
+            <label class="field-label" for="inp-mem-doc">Target Dokumen</label>
+            <input type="text" id="inp-mem-doc" value="self" placeholder="self / topic:musik / person:12345">
+            <label class="field-label" for="inp-mem-fact">Fakta yang Harus Diingat</label>
+            <textarea id="inp-mem-fact" rows="3" placeholder="Misal: Ther suka ngoding sambil dengerin lagu lofi"></textarea>
+            <div style="margin-top:12px;">
+              <button id="btn-add-memory" class="btn btn-primary">Simpan ke Notebook</button>
+            </div>
+
+            <h2 style="margin-top:24px;">Ingatan Episodik Terbaru (L2 Hybrid)</h2>
+            <div id="memories-list" class="event-log" style="height:220px;"></div>
+          </div>
+
+          <div class="panel-box">
+            <h2>Living Notebook Aktif (L3)</h2>
+            <div id="notebook-list" class="event-log" style="height:410px;"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 5: VOICE, SINGING & STAGE -->
+      <section id="tab-voice" class="tab-panel">
+        <div class="grid-2">
+          <div class="panel-box">
+            <h2>Pengaturan Mesin AI & Suara Live</h2>
+            <label class="field-label" for="sel-llm-provider">Provider LLM</label>
+            <select id="sel-llm-provider">
+              <option value="ollama">Ollama Lokal (Radeon RX 9070 16GB)</option>
+              <option value="openai_compat">LM Studio / OpenAI-Compatible Lokal</option>
+              <option value="gemini">Google Gemini API</option>
+            </select>
+
+            <label class="field-label" for="inp-ollama-model">Nama Model Ollama</label>
+            <input type="text" id="inp-ollama-model" placeholder="qwen3:8b">
+
+            <label class="field-label" for="sel-tts-provider">Mesin Suara (TTS)</label>
+            <select id="sel-tts-provider">
+              <option value="edge">Edge Neural (Gratis, Bahasa Indonesia Halus, 0 VRAM)</option>
+              <option value="piper">Piper ONNX (100% Lokal Offline Indonesia)</option>
+              <option value="elevenlabs">ElevenLabs API</option>
+            </select>
+
+            <label class="field-label" for="inp-edge-voice">Suara Edge Neural</label>
+            <input type="text" id="inp-edge-voice" placeholder="id-ID-GadisNeural / ja-JP-NanamiNeural">
+
+            <div style="margin-top:16px;">
+              <button id="btn-save-runtime" class="btn btn-primary">Terapkan Mesin Sekarang</button>
+            </div>
+          </div>
+
+          <div class="panel-box">
+            <h2>Antrean Karaoke / AI Singing & Stage</h2>
+            <div style="display:flex; gap:8px; margin-bottom:12px;">
+              <input type="text" id="inp-song-query" placeholder="Judul lagu atau URL YouTube...">
+              <button id="btn-song-add" class="btn btn-primary">Antrekan</button>
+              <button id="btn-song-skip" class="btn btn-danger">Skip</button>
+            </div>
+            <div id="sing-queue-box" class="event-log" style="height:170px;"></div>
+
+            <h2 style="margin-top:20px;">Status VTuber Stage</h2>
+            <div id="stage-status-box" style="font-size:0.88rem; color:var(--text-secondary);"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast">Tersimpan</div>
+  <script src="/static/panel.js"></script>
+</body>
+</html>

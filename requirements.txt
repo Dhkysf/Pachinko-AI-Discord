@@ -1,0 +1,27 @@
+# Voice Discord DAVE E2EE (wajib sejak Maret 2026 untuk menerima audio voice)
+py-cord[voice] @ git+https://github.com/Pycord-Development/pycord@refs/pull/3159/head
+davey>=0.1.6
+
+# Core, Database, & Web Admin Panel + OBS Overlay
+python-dotenv
+httpx
+numpy
+aiosqlite
+fastapi
+uvicorn
+websockets
+tomli-w
+
+# Local Speech-to-Text & Text-to-Speech (Windows + AMD Radeon siap jalan tanpa CUDA)
+faster-whisper
+piper-tts
+edge-tts
+onnxruntime-directml; sys_platform == "win32"
+
+# Tools, Karaoke Singing, & Cloud Fallback Opsional
+yt-dlp
+ddgs
+soundfile
+scipy
+google-genai
+groq

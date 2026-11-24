@@ -1,0 +1,3 @@
+# Opsional: Pemisahan vokal AI lokal (UVR / MDX-Net / Demucs via DirectML di AMD RX 9070)
+audio-separator[cpu]
+onnxruntime-directml; sys_platform == "win32"

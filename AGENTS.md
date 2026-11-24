@@ -1,0 +1,1 @@
+- This project requires Python 3.12 (onnxruntime-directml does not yet support 3.13+). Always use `.venv\Scripts\python.exe`.
