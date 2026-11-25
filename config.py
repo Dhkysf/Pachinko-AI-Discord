@@ -115,7 +115,10 @@ class AppConfig:
 
     # --- TTS (Default: "piper" 100% offline ONNX or "edge" free Indonesian neural, + optional RVC clone) ---
     # Options: "piper" | "edge" | "elevenlabs"
-    tts_provider: str = field(default_factory=lambda: os.getenv("TTS_PROVIDER", "edge").lower())
+    tts_provider: str = field(default_factory=lambda: os.getenv("TTS_PROVIDER", "edge").strip().lower())
+    tts_fallback: tuple[str, ...] = field(
+        default_factory=lambda: tuple(x.lower() for x in _csv("TTS_FALLBACK", "edge,piper"))
+    )
     piper_model_path: Path = field(
         default_factory=lambda: Path(
             os.getenv("PIPER_MODEL_PATH", str(MODELS_DIR / "piper" / "id_ID-news_tts-medium.onnx"))

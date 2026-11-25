@@ -72,6 +72,10 @@ Open https://discord.com/developers/applications → select your bot application
 - **Privacy note:** Search queries leave this PC.
 - **Out of scope:** Control App UI for this setting, and full web page fetching.
 
+### Voice / TTS
+- **Options & fallback:** Choose `TTS_PROVIDER` in `.env` between `edge` (default, free Indonesian neural voice), `elevenlabs` (optional API with `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL`), or `piper` (100% local offline ONNX). When the main provider fails, `TTS_FALLBACK` (default `edge,piper`) controls the fallback order, with `piper` always kept as the last resort; ElevenLabs quota/key errors (401/402/429) trigger a 10-minute cooldown straight to the fallback.
+- **Out of scope:** Control App UI for TTS settings, and RVC.
+
 ### Control App (`Pachinko.lnk` / `Pachinko.pyw`)
 - <!-- Screenshot placeholder: Pachinko Control window & system tray -->
 - **System tray & status:** Shows live bot state (`Stopped`, `Starting`, `Running`, `Stopping`, `Crashed`, `Already running`), uptime, Discord readiness, Ollama health, and voice session count. Closing with **X** minimizes to the tray when enabled, and tray notifications alert you if the bot crashes or Ollama goes down.

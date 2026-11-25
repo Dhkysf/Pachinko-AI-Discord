@@ -15,8 +15,10 @@ import asyncio
 import hashlib
 import io
 import logging
+import re
 import subprocess
 import tempfile
+import time
 import wave
 from pathlib import Path
 
@@ -31,6 +33,53 @@ PIPER_DEFAULT_FILES = ("id_ID-news_tts-medium.onnx", "id_ID-news_tts-medium.onnx
 
 FILLER_CACHE_DIR = DATA_DIR / "filler_cache"
 FILLER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+ELEVENLABS_COOLDOWN_SEC = 600.0
+_VALID_PROVIDERS = ("elevenlabs", "edge", "piper")
+_PROVIDER_LABELS = {"elevenlabs": "ElevenLabs", "edge": "Edge", "piper": "Piper"}
+_QUOTA_RE = re.compile(r"\b(401|402|429)\b|quota|limit|credit|exceeded", re.IGNORECASE)
+
+
+class _ElevenLabsError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int, cooldown: bool) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.cooldown = cooldown
+
+
+def _elevenlabs_error_summary(resp: httpx.Response) -> str:
+    """Return a short, key-safe error summary from an ElevenLabs HTTP response."""
+    summary = f"HTTP {resp.status_code}"
+    try:
+        data = resp.json()
+    except Exception:
+        return summary
+    if isinstance(data, dict):
+        detail = data.get("detail")
+        if isinstance(detail, dict):
+            parts = [str(detail.get("status") or "").strip(), str(detail.get("message") or "").strip()]
+            msg = ": ".join(p for p in parts if p)
+            if msg:
+                summary = f"{summary}: {msg}"
+        elif isinstance(detail, str) and detail.strip():
+            summary = f"{summary}: {detail.strip()}"
+    return summary[:160]
+
+
+def _safe_err(exc: Exception) -> str:
+    msg = str(exc)
+    if config.elevenlabs_api_key:
+        msg = msg.replace(config.elevenlabs_api_key, "***")
+    return msg
+
+
+def _is_elevenlabs_cooldown_error(exc: Exception) -> bool:
+    if isinstance(exc, _ElevenLabsError):
+        return exc.cooldown
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in (401, 402, 429):
+        return True
+    return bool(_QUOTA_RE.search(str(exc)))
 
 
 def audio_bytes_to_pcm48k(raw_audio: bytes, input_fmt: str = "mp3") -> bytes:
@@ -54,6 +103,8 @@ class TTSEngine:
         self._piper_loaded_path: Path | None = None
         self._lock = asyncio.Lock()
         self._http = httpx.AsyncClient(timeout=45.0, follow_redirects=True)
+        self._el_cooldown_until: float = 0.0
+        self._el_cooldown_active: bool = False
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -76,41 +127,106 @@ class TTSEngine:
                 dest.write_bytes(r.content)
         return target_dir / PIPER_DEFAULT_FILES[0]
 
+    def _provider_order(self) -> list[str]:
+        main = (config.tts_provider or "edge").strip().lower()
+        order = [main] if main in _VALID_PROVIDERS else ["edge"]
+        raw_fb = config.tts_fallback
+        items = raw_fb.split(",") if isinstance(raw_fb, str) else raw_fb
+        for item in items:
+            p = item.strip().lower()
+            if p in _VALID_PROVIDERS and p not in order:
+                order.append(p)
+        if "piper" not in order:
+            order.append("piper")
+        return order
+
+    def _preferred_active_provider(self) -> str:
+        for p in self._provider_order():
+            if p == "elevenlabs":
+                if not (config.elevenlabs_api_key and config.elevenlabs_voice_id):
+                    continue
+                if self._el_cooldown_active and time.monotonic() < self._el_cooldown_until:
+                    continue
+            return p
+        return "piper"
+
+    def _filler_cache_key(self, provider: str, phrase: str) -> str:
+        if provider == "elevenlabs":
+            voice = config.elevenlabs_voice_id
+        elif provider == "piper":
+            voice = config.piper_model_path.name
+        else:
+            voice = config.edge_tts_voice
+        return hashlib.md5(f"{provider}:{voice}:{phrase}".encode()).hexdigest()[:12]
+
     async def synthesize_pcm(self, text: str, *, emotion: str = "neutral") -> bytes:
         """Generate raw PCM 48kHz stereo int16 from a single sentence."""
+        pcm, _ = await self._synthesize_pcm_with_provider(text, emotion=emotion)
+        return pcm
+
+    async def _synthesize_pcm_with_provider(self, text: str, *, emotion: str = "neutral") -> tuple[bytes, str]:
         clean = text.strip()
         if not clean:
-            return b""
+            return b"", ""
 
-        provider = config.tts_provider
-        wav_or_mp3: bytes
-        fmt: str
+        order = self._provider_order()
+        wav_or_mp3: bytes = b""
+        fmt: str = "wav"
+        actual_provider: str = "piper"
 
-        try:
-            if provider == "piper":
-                wav_or_mp3, fmt = await self._synth_piper(clean), "wav"
-            elif provider == "elevenlabs" and config.elevenlabs_api_key and config.elevenlabs_voice_id:
-                wav_or_mp3, fmt = await self._synth_elevenlabs(clean), "mp3"
-            else:
-                wav_or_mp3, fmt = await self._synth_edge(clean, emotion=emotion), "mp3"
-        except Exception as e:
-            log.warning("TTS '%s' failed (%s), falling back to local offline Piper...", provider, e)
-            wav_or_mp3, fmt = await self._synth_piper(clean), "wav"
+        for idx, provider in enumerate(order):
+            if provider == "elevenlabs":
+                if not (config.elevenlabs_api_key and config.elevenlabs_voice_id):
+                    continue
+                if self._el_cooldown_active:
+                    if time.monotonic() < self._el_cooldown_until:
+                        continue
+                    self._el_cooldown_active = False
+                    log.info("ElevenLabs cooldown ended, trying ElevenLabs again.")
+
+            try:
+                if provider == "piper":
+                    wav_or_mp3, fmt = await self._synth_piper(clean), "wav"
+                elif provider == "elevenlabs":
+                    wav_or_mp3, fmt = await self._synth_elevenlabs(clean), "mp3"
+                else:
+                    wav_or_mp3, fmt = await self._synth_edge(clean, emotion=emotion), "mp3"
+                actual_provider = provider
+                break
+            except Exception as e:
+                if idx == len(order) - 1:
+                    raise
+                next_prov = order[idx + 1]
+                if provider == "elevenlabs" and _is_elevenlabs_cooldown_error(e):
+                    now = time.monotonic()
+                    already_active = self._el_cooldown_active and now < self._el_cooldown_until
+                    self._el_cooldown_until = now + ELEVENLABS_COOLDOWN_SEC
+                    self._el_cooldown_active = True
+                    if not already_active:
+                        log.warning(
+                            "ElevenLabs quota or key problem, using %s for 10 min (%s)",
+                            _PROVIDER_LABELS.get(next_prov, next_prov),
+                            _safe_err(e),
+                        )
+                else:
+                    log.warning("TTS '%s' failed (%s), falling back to '%s'...", provider, _safe_err(e), next_prov)
 
         if config.rvc_enabled:
             wav_or_mp3, fmt = await self._apply_rvc_if_available(wav_or_mp3, fmt)
 
-        return await asyncio.to_thread(audio_bytes_to_pcm48k, wav_or_mp3, fmt)
+        pcm = await asyncio.to_thread(audio_bytes_to_pcm48k, wav_or_mp3, fmt)
+        return pcm, actual_provider
 
     async def get_filler_pcm(self, phrase: str) -> bytes:
         """Fetch (or generate once and cache on disk) a short 'Hmm?' filler clip with zero delay."""
-        key = hashlib.md5(f"{config.tts_provider}:{config.edge_tts_voice}:{phrase}".encode()).hexdigest()[:12]
-        cache_file = FILLER_CACHE_DIR / f"{key}.pcm"
+        expected = self._preferred_active_provider()
+        cache_file = FILLER_CACHE_DIR / f"{self._filler_cache_key(expected, phrase)}.pcm"
         if cache_file.exists():
             return cache_file.read_bytes()
-        pcm = await self.synthesize_pcm(phrase, emotion="thinking")
+        pcm, actual_provider = await self._synthesize_pcm_with_provider(phrase, emotion="thinking")
         if pcm:
-            cache_file.write_bytes(pcm)
+            actual_file = FILLER_CACHE_DIR / f"{self._filler_cache_key(actual_provider, phrase)}.pcm"
+            actual_file.write_bytes(pcm)
         return pcm
 
     async def _synth_edge(self, text: str, emotion: str = "neutral") -> bytes:
@@ -167,7 +283,9 @@ class TTSEngine:
             },
         )
         if r.status_code != 200:
-            raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:200]}")
+            summary = _elevenlabs_error_summary(r)
+            cooldown = r.status_code in (401, 402, 429) or bool(_QUOTA_RE.search(summary))
+            raise _ElevenLabsError(f"ElevenLabs {summary}", status_code=r.status_code, cooldown=cooldown)
         return r.content
 
     async def _apply_rvc_if_available(self, audio_bytes: bytes, fmt: str) -> tuple[bytes, str]:
