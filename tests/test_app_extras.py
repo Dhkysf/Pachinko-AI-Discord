@@ -9,23 +9,30 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from app.extras import (
     backup_database,
     build_diagnostics,
+    fetch_gemini_models,
+    fetch_ninerouter_models,
+    fetch_ollama_models,
     model_is_installed,
+    ninerouter_dashboard_url,
     run_preflight,
     warm_up_ollama,
 )
 from app.process import (
     STATE_RUNNING,
+    STATE_STOPPED,
     BotProcessManager,
     BotStatus,
     load_settings,
     save_settings,
 )
+from app.tray import format_tooltip
 
 
 class _FakeHTTPResponse:
@@ -118,8 +125,9 @@ class TestAppExtras(unittest.TestCase):
             port_free=lambda _host, _port: True,
         )
         by_name = {r.name: r for r in res}
-        self.assertTrue(by_name["Ollama"].ok)
-        self.assertIn("Skipped", by_name["Ollama"].detail)
+        self.assertNotIn("Ollama", by_name)
+        self.assertIn("Gemini", by_name)
+        self.assertFalse(by_name["Gemini"].ok)
 
     def test_model_is_installed(self) -> None:
         self.assertTrue(model_is_installed("qwen3:8b", ["qwen3:8b"]))
@@ -158,23 +166,36 @@ class TestAppExtras(unittest.TestCase):
         )
         self.assertEqual(r_override.stdout.strip(), "from-env-override")
 
-    def test_process_manager_passes_ollama_model_env(self) -> None:
-        out_file = self.tmp_dir / "env_model.txt"
+    def test_process_manager_passes_llm_env_per_source_and_use_env(self) -> None:
+        out_file = self.tmp_dir / "env_out.json"
         script = self.tmp_dir / "print_env.py"
         script.write_text(
-            "import os, sys; from pathlib import Path; "
-            f"Path({str(out_file)!r}).write_text(os.environ.get('OLLAMA_MODEL', '<UNSET>'), encoding='utf-8')",
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "data = {k: os.environ.get(k) for k in ('LLM_PROVIDER', 'OLLAMA_MODEL', 'NINEROUTER_MODEL', 'GEMINI_MODEL')}\n"
+            f"Path({str(out_file)!r}).write_text(json.dumps(data), encoding='utf-8')\n",
             encoding="utf-8",
         )
-        mgr = BotProcessManager(
-            self.repo_root,
-            data_dir=self.tmp_dir,
-            bot_cmd=[sys.executable, str(script)],
-            ollama_model="gemma3:12b",
-        )
-        self.assertTrue(mgr.start())
-        mgr._proc.wait(timeout=5.0)  # type: ignore[union-attr]
-        self.assertEqual(out_file.read_text(encoding="utf-8"), "gemma3:12b")
+        cases = [
+            ("ollama", "gemma3:12b", {"LLM_PROVIDER": "ollama", "OLLAMA_MODEL": "gemma3:12b", "NINEROUTER_MODEL": None, "GEMINI_MODEL": None}),
+            ("ninerouter", "openai/gpt-4o", {"LLM_PROVIDER": "ninerouter", "OLLAMA_MODEL": None, "NINEROUTER_MODEL": "openai/gpt-4o", "GEMINI_MODEL": None}),
+            ("gemini", "gemini-2.5-flash", {"LLM_PROVIDER": "gemini", "OLLAMA_MODEL": None, "NINEROUTER_MODEL": None, "GEMINI_MODEL": "gemini-2.5-flash"}),
+            ("", "", {"LLM_PROVIDER": None, "OLLAMA_MODEL": None, "NINEROUTER_MODEL": None, "GEMINI_MODEL": None}),
+        ]
+        for src, mdl, expected in cases:
+            out_file.unlink(missing_ok=True)
+            mgr = BotProcessManager(
+                self.repo_root,
+                data_dir=self.tmp_dir,
+                bot_cmd=[sys.executable, str(script)],
+                llm_source=src,
+                llm_model=mdl,
+            )
+            self.assertTrue(mgr.start())
+            rc = mgr._proc.wait(timeout=5.0)  # type: ignore[union-attr]
+            self.assertEqual(rc, 0)
+            got = json.loads(out_file.read_text(encoding="utf-8"))
+            self.assertEqual(got, expected, f"failed for {(src, mdl)}")
 
     def test_backup_database_with_open_wal_writer_and_rotation(self) -> None:
         db_path = self.tmp_dir / "pachinko.db"
@@ -235,8 +256,18 @@ class TestAppExtras(unittest.TestCase):
             encoding="utf-8",
         )
         diag = build_diagnostics(
-            status=BotStatus(state=STATE_RUNNING, pid=1234, uptime=42, discord_ready=True, llm_ok=True),
-            selected_model="",
+            status=BotStatus(
+                state=STATE_RUNNING,
+                pid=1234,
+                uptime=42,
+                discord_ready=True,
+                llm_ok=True,
+                llm_provider="ninerouter",
+                llm_model="openai/gpt-4o",
+            ),
+            selected_source="ninerouter",
+            selected_model="openai/gpt-4o",
+            env_source="ollama",
             env_model="qwen3:8b",
             preflight=[],
             log_path=log_path,
@@ -245,6 +276,8 @@ class TestAppExtras(unittest.TestCase):
         self.assertNotIn(fake_sk, diag)
         self.assertNotIn("super_secret_value_12345", diag)
         self.assertIn("[REDACTED]", diag)
+        self.assertIn("ninerouter", diag)
+        self.assertIn("openai/gpt-4o", diag)
 
     def test_warm_up_ollama_posts_generate_payload(self) -> None:
         captured: dict[str, object] = {}
@@ -263,12 +296,175 @@ class TestAppExtras(unittest.TestCase):
             {"model": "qwen3:8b", "prompt": "", "stream": False, "keep_alive": "15m"},
         )
 
-    def test_settings_persist_ollama_model(self) -> None:
+    def test_settings_migration_and_per_source_models(self) -> None:
         cfg_path = self.tmp_dir / "app_settings.json"
-        save_settings(cfg_path, {"ollama_model": "gemma3:12b", "start_bot_on_open": True})
+        # Legacy ollama_model migrates into model_ollama
+        cfg_path.write_text(json.dumps({"ollama_model": "gemma3:12b", "start_bot_on_open": True}), encoding="utf-8")
+        migrated = load_settings(cfg_path)
+        self.assertEqual(migrated["model_ollama"], "gemma3:12b")
+        self.assertEqual(migrated["llm_source"], "")
+        self.assertTrue(migrated["start_bot_on_open"])
+
+        # Explicit empty model_ollama is not overwritten by legacy ollama_model
+        cfg_path.write_text(json.dumps({"ollama_model": "gemma3:12b", "model_ollama": ""}), encoding="utf-8")
+        self.assertEqual(load_settings(cfg_path)["model_ollama"], "")
+
+        save_settings(
+            cfg_path,
+            {
+                "llm_source": "ninerouter",
+                "model_ollama": "qwen3:8b",
+                "model_ninerouter": "openai/gpt-4o",
+                "model_gemini": "gemini-2.5-flash",
+            },
+        )
         loaded = load_settings(cfg_path)
-        self.assertEqual(loaded["ollama_model"], "gemma3:12b")
-        self.assertTrue(loaded["start_bot_on_open"])
+        self.assertEqual(loaded["llm_source"], "ninerouter")
+        self.assertEqual(loaded["model_ollama"], "qwen3:8b")
+        self.assertEqual(loaded["model_ninerouter"], "openai/gpt-4o")
+        self.assertEqual(loaded["model_gemini"], "gemini-2.5-flash")
+
+    def test_fetch_models_all_sources_empty_and_401(self) -> None:
+        # Ollama
+        ok, models, err = fetch_ollama_models(
+            "http://127.0.0.1:11434",
+            opener=lambda _req, timeout=0: _FakeHTTPResponse(
+                json.dumps({"models": [{"name": "qwen3:8b"}, {"name": "gemma3:12b"}]}).encode("utf-8")
+            ),
+        )
+        self.assertTrue(ok)
+        self.assertEqual(models, ["qwen3:8b", "gemma3:12b"])
+        self.assertEqual(err, "")
+
+        # 9router: sorted ids, Bearer header, empty list, 401, connection refused
+        captured_headers: dict[str, str] = {}
+
+        def nr_ok(req, timeout=0):
+            captured_headers.update(dict(req.header_items()))
+            body = json.dumps({"data": [{"id": "z-model"}, {"id": "a-model"}, {"id": "a-model"}]}).encode("utf-8")
+            return _FakeHTTPResponse(body)
+
+        ok_nr, models_nr, err_nr = fetch_ninerouter_models("http://127.0.0.1:20128/v1", "nr-key-123", opener=nr_ok)
+        self.assertTrue(ok_nr)
+        self.assertEqual(models_nr, ["a-model", "z-model"])
+        self.assertEqual(err_nr, "")
+        self.assertEqual(captured_headers.get("Authorization"), "Bearer nr-key-123")
+
+        ok_empty, models_empty, err_empty = fetch_ninerouter_models(
+            "http://127.0.0.1:20128/v1",
+            "nr-key-123",
+            opener=lambda _req, timeout=0: _FakeHTTPResponse(b'{"data": []}'),
+        )
+        self.assertTrue(ok_empty)
+        self.assertEqual(models_empty, [])
+        self.assertIn("No models found - connect a provider in the 9router dashboard", err_empty)
+
+        def nr_401(req, timeout=0):
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, io.BytesIO(b""))
+
+        ok_401, _, err_401 = fetch_ninerouter_models("http://127.0.0.1:20128/v1", "bad-key", opener=nr_401)
+        self.assertFalse(ok_401)
+        self.assertEqual(err_401, "API key missing or wrong")
+
+        def nr_down(_req, timeout=0):
+            raise urllib.error.URLError("connection refused")
+
+        ok_down, _, err_down = fetch_ninerouter_models("http://127.0.0.1:20128/v1", "nr-key-123", opener=nr_down)
+        self.assertFalse(ok_down)
+        self.assertIn("9router not running at", err_down)
+
+        # Gemini: generateContent filter, short names, x-goog-api-key header (not in URL), empty, 401
+        gem_req: dict[str, object] = {}
+
+        def gem_ok(req, timeout=0):
+            gem_req["url"] = req.full_url
+            gem_req["headers"] = {k.lower(): v for k, v in req.header_items()}
+            payload = {
+                "models": [
+                    {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]},
+                    {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+                ]
+            }
+            return _FakeHTTPResponse(json.dumps(payload).encode("utf-8"))
+
+        ok_g, models_g, err_g = fetch_gemini_models("AIzaFakeKey123", opener=gem_ok)
+        self.assertTrue(ok_g)
+        self.assertEqual(models_g, ["gemini-2.5-flash", "gemini-2.5-pro"])
+        self.assertEqual(err_g, "")
+        self.assertNotIn("AIzaFakeKey123", str(gem_req["url"]))
+        self.assertEqual(gem_req["headers"].get("x-goog-api-key"), "AIzaFakeKey123")  # type: ignore[union-attr]
+
+        ok_ge, models_ge, _ = fetch_gemini_models(
+            "AIzaFakeKey123",
+            opener=lambda _req, timeout=0: _FakeHTTPResponse(b'{"models": []}'),
+        )
+        self.assertTrue(ok_ge)
+        self.assertEqual(models_ge, [])
+
+        ok_g401, _, err_g401 = fetch_gemini_models("AIzaFakeKey123", opener=nr_401)
+        self.assertFalse(ok_g401)
+        self.assertEqual(err_g401, "API key missing or wrong")
+
+    def test_preflight_per_selected_source_and_dashboard_url(self) -> None:
+        self.assertEqual(ninerouter_dashboard_url("http://127.0.0.1:20128/v1"), "http://127.0.0.1:20128/dashboard")
+        self.assertEqual(ninerouter_dashboard_url("not-a-url"), "http://127.0.0.1:20128/dashboard")
+
+        # 9router selected: missing key -> fails without probing Ollama
+        (self.tmp_dir / ".env").write_text("DISCORD_TOKEN=tok\nLLM_PROVIDER=ollama\n", encoding="utf-8")
+        res_nr_nokey, _ = run_preflight(
+            self.tmp_dir,
+            selected_source="ninerouter",
+            selected_model="openai/gpt-4o",
+            which=lambda _n: "ffmpeg",
+            fetch_models=lambda _u: (_ for _ in ()).throw(AssertionError("should not probe")),
+            port_free=lambda _h, _p: True,
+        )
+        by_name = {r.name: r for r in res_nr_nokey}
+        self.assertFalse(by_name["9router"].ok)
+        self.assertEqual(by_name["9router"].code, "ninerouter_issue")
+
+        # 9router selected with key and model in list -> ok
+        (self.tmp_dir / ".env").write_text(
+            "DISCORD_TOKEN=tok\nNINEROUTER_API_KEY=nr-secret-123\n",
+            encoding="utf-8",
+        )
+        res_nr_ok, _ = run_preflight(
+            self.tmp_dir,
+            selected_source="ninerouter",
+            selected_model="openai/gpt-4o",
+            which=lambda _n: "ffmpeg",
+            fetch_models=lambda _u: (True, ["openai/gpt-4o"], ""),
+            port_free=lambda _h, _p: True,
+        )
+        self.assertTrue(all(r.ok for r in res_nr_ok))
+
+        # Gemini selected with key and model in list -> ok
+        (self.tmp_dir / ".env").write_text(
+            "DISCORD_TOKEN=tok\nGEMINI_API_KEY=AIzaSecret123\n",
+            encoding="utf-8",
+        )
+        res_gem_ok, _ = run_preflight(
+            self.tmp_dir,
+            selected_source="gemini",
+            selected_model="gemini-2.5-flash",
+            which=lambda _n: "ffmpeg",
+            fetch_models=lambda _u: (True, ["gemini-2.5-flash"], ""),
+            port_free=lambda _h, _p: True,
+        )
+        self.assertTrue(all(r.ok for r in res_gem_ok))
+
+    def test_tray_tooltip_includes_source_and_model(self) -> None:
+        tip = format_tooltip(
+            BotStatus(
+                state=STATE_RUNNING,
+                uptime=125,
+                llm_provider="ninerouter",
+                llm_model="openai/gpt-4o",
+            )
+        )
+        self.assertEqual(tip, "Pachinko - Running - 9router: openai/gpt-4o (2m)")
+        self.assertEqual(format_tooltip(BotStatus(state=STATE_STOPPED)), "Pachinko - Stopped")
 
 
 if __name__ == "__main__":

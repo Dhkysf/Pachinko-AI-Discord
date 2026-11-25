@@ -17,6 +17,7 @@ from app.process import (
     STATE_STOPPING,
     BotStatus,
     format_uptime,
+    source_label,
 )
 
 STATUS_COLORS: dict[str, str] = {
@@ -74,11 +75,20 @@ def write_ico(path: Path, color: str = "#22c55e") -> Path:
 
 
 def format_tooltip(status: BotStatus) -> str:
-    """Build the tray tooltip string, e.g. 'Pachinko - Running (2h 13m)'."""
+    """Build the tray tooltip string, e.g. 'Pachinko - Running - 9router: gpt-4o (2h 13m)'."""
     label = f"{status.state} (external)" if status.external else status.state
+    parts = [f"Pachinko - {label}"]
+    active = status.state in (STATE_RUNNING, STATE_STARTING, STATE_STOPPING, STATE_ALREADY_RUNNING)
+    if active and (status.llm_provider or status.llm_model):
+        src = source_label(status.llm_provider) if status.llm_provider else ""
+        if src and status.llm_model:
+            parts.append(f"{src}: {status.llm_model}")
+        else:
+            parts.append(src or status.llm_model)
+    tip = " - ".join(parts)
     if status.state in (STATE_RUNNING, STATE_STARTING, STATE_STOPPING) and status.uptime > 0:
-        return f"Pachinko - {label} ({format_uptime(status.uptime)})"
-    return f"Pachinko - {label}"
+        tip = f"{tip} ({format_uptime(status.uptime)})"
+    return tip[:119] + "…" if len(tip) > 120 else tip
 
 
 class TrayController:

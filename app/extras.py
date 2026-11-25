@@ -10,6 +10,7 @@ import socket
 import sqlite3
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
@@ -18,7 +19,14 @@ from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Callable
 
-from app.process import BotStatus, read_env_summary, tail_log_lines
+from app.process import (
+    BotStatus,
+    effective_llm_selection,
+    read_env_summary,
+    read_llm_api_key,
+    source_label,
+    tail_log_lines,
+)
 from core.safety import redact_secrets
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -37,16 +45,17 @@ class CheckResult:
 def fetch_ollama_models(
     base_url: str,
     *,
-    timeout: float = 2.5,
+    timeout: float = 5.0,
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> tuple[bool, list[str], str]:
     """Query Ollama /api/tags and return (reachable, model_names, error)."""
-    url = f"{base_url.rstrip('/')}/api/tags"
+    clean_base = base_url.rstrip("/")
+    url = f"{clean_base}/api/tags"
     try:
         with opener(url, timeout=timeout) as resp:
             status = getattr(resp, "status", 200)
             if status != 200:
-                return False, [], f"HTTP {status}"
+                return False, [], f"Ollama returned HTTP {status}"
             raw = resp.read()
         data = json.loads(raw.decode("utf-8", errors="replace"))
         models = [
@@ -55,8 +64,150 @@ def fetch_ollama_models(
             if isinstance(m, dict) and m.get("name")
         ]
         return True, models, ""
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError, TypeError) as exc:
-        return False, [], str(exc)
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False, [], f"Ollama not running at {clean_base}"
+    except (ValueError, TypeError) as exc:
+        return False, [], f"Invalid response from Ollama ({exc})"
+
+
+def ninerouter_dashboard_url(base_url: str) -> str:
+    """Derive the 9router dashboard URL from NINEROUTER_BASE_URL."""
+    parts = urllib.parse.urlsplit((base_url or "").strip())
+    if parts.scheme in ("http", "https") and parts.netloc:
+        return f"{parts.scheme}://{parts.netloc}/dashboard"
+    return "http://127.0.0.1:20128/dashboard"
+
+
+def fetch_ninerouter_models(
+    base_url: str,
+    api_key: str,
+    *,
+    timeout: float = 5.0,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+) -> tuple[bool, list[str], str]:
+    """Query 9router GET /models with Bearer auth and return (reachable, sorted_ids, error)."""
+    key = (api_key or "").strip()
+    if not key:
+        return False, [], "API key missing or wrong"
+    clean_base = base_url.rstrip("/")
+    req = urllib.request.Request(
+        f"{clean_base}/models",
+        headers={"Authorization": f"Bearer {key}"},
+        method="GET",
+    )
+    try:
+        with opener(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            if status in (401, 403):
+                return False, [], "API key missing or wrong"
+            if status != 200:
+                return False, [], f"9router returned HTTP {status}"
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False, [], "API key missing or wrong"
+        return False, [], f"9router returned HTTP {exc.code}"
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False, [], f"9router not running at {clean_base}"
+
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+        models = sorted(
+            {
+                str(m["id"]).strip()
+                for m in (data.get("data") or [])
+                if isinstance(m, dict) and str(m.get("id") or "").strip()
+            }
+        )
+    except (ValueError, TypeError, AttributeError) as exc:
+        return False, [], f"Invalid response from 9router ({exc})"
+
+    if not models:
+        return True, [], "No models found - connect a provider in the 9router dashboard"
+    return True, models, ""
+
+
+def fetch_gemini_models(
+    api_key: str,
+    *,
+    timeout: float = 5.0,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+) -> tuple[bool, list[str], str]:
+    """List Gemini models supporting generateContent via REST, returning short names."""
+    key = (api_key or "").strip()
+    if not key:
+        return False, [], "API key missing or wrong"
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/models?pageSize=1000",
+        headers={"x-goog-api-key": key},
+        method="GET",
+    )
+    try:
+        with opener(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            if status in (401, 403):
+                return False, [], "API key missing or wrong"
+            if status != 200:
+                return False, [], f"Gemini returned HTTP {status}"
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False, [], "API key missing or wrong"
+        if exc.code == 400:
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace").lower()
+            except Exception:
+                err_body = ""
+            if "api_key_invalid" in err_body or "api key" in err_body:
+                return False, [], "API key missing or wrong"
+        return False, [], f"Gemini returned HTTP {exc.code}"
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False, [], "Gemini API not reachable"
+
+    try:
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+        models: set[str] = set()
+        for m in data.get("models") or []:
+            if not isinstance(m, dict):
+                continue
+            methods = m.get("supportedGenerationMethods") or []
+            if "generateContent" not in methods:
+                continue
+            name = str(m.get("name") or "").strip()
+            if name.startswith("models/"):
+                name = name[len("models/"):]
+            if name:
+                models.add(name)
+        sorted_models = sorted(models)
+    except (ValueError, TypeError, AttributeError) as exc:
+        return False, [], f"Invalid response from Gemini ({exc})"
+
+    if not sorted_models:
+        return True, [], "No Gemini models available"
+    return True, sorted_models, ""
+
+
+def fetch_models_for_source(
+    source: str,
+    root_dir: Path,
+    *,
+    env: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+) -> tuple[bool, list[str], str]:
+    """Fetch available models for one source ('ollama' | 'ninerouter' | 'gemini')."""
+    src = (source or "").strip().lower()
+    summary = env if env is not None else read_env_summary(root_dir)
+    if src == "ollama":
+        return fetch_ollama_models(summary["ollama_base_url"], timeout=timeout, opener=opener)
+    if src == "ninerouter":
+        key = read_llm_api_key(root_dir, "ninerouter")
+        return fetch_ninerouter_models(summary["ninerouter_base_url"], key, timeout=timeout, opener=opener)
+    if src == "gemini":
+        key = read_llm_api_key(root_dir, "gemini")
+        return fetch_gemini_models(key, timeout=timeout, opener=opener)
+    return False, [], f"Unsupported source: {src}"
 
 
 def model_is_installed(model: str, installed: list[str]) -> bool:
@@ -152,16 +303,18 @@ def is_port_free(host: str, port: int) -> bool:
 def run_preflight(
     root_dir: Path,
     *,
+    selected_source: str = "",
     selected_model: str = "",
     bot_running: bool = False,
     which: Callable[[str], str | None] = shutil.which,
-    fetch_models: Callable[[str], tuple[bool, list[str], str]] = fetch_ollama_models,
+    fetch_models: Callable[[str], tuple[bool, list[str], str]] | None = None,
+    opener: Callable[..., Any] = urllib.request.urlopen,
     port_free: Callable[[str, int], bool] = is_port_free,
 ) -> tuple[list[CheckResult], list[str]]:
-    """Run pre-flight checks and return (results, installed_ollama_models)."""
+    """Run pre-flight checks for the selected LLM source and return (results, fetched_models)."""
     env = read_env_summary(root_dir)
     results: list[CheckResult] = []
-    installed: list[str] = []
+    fetched: list[str] = []
 
     if not env["env_exists"]:
         results.append(
@@ -203,28 +356,30 @@ def run_preflight(
             )
         )
 
-    if env["llm_provider"] != "ollama":
-        results.append(
-            CheckResult(
-                name="Ollama",
-                ok=True,
-                detail=f"Skipped (LLM_PROVIDER={env['llm_provider']})",
-            )
-        )
+    src = (selected_source or "").strip().lower()
+    if src in ("ollama", "ninerouter", "gemini"):
+        source = src
+        effective_model = selected_model.strip() or str(env.get(f"{src}_model", "") or "").strip()
     else:
-        effective_model = selected_model.strip() or env["ollama_model"]
-        reachable, installed, err = fetch_models(env["ollama_base_url"])
+        source, effective_model = effective_llm_selection({}, env)
+
+    if source == "ollama":
+        reachable, fetched, err = (
+            fetch_models(env["ollama_base_url"])
+            if fetch_models is not None
+            else fetch_ollama_models(env["ollama_base_url"], opener=opener)
+        )
         if not reachable:
             results.append(
                 CheckResult(
                     name="Ollama",
                     ok=False,
-                    detail=f"Not reachable at {env['ollama_base_url']} ({err or 'connection failed'})",
+                    detail=err or f"Ollama not running at {env['ollama_base_url']}",
                     hint="Click 'Start Ollama' or launch the Ollama app.",
                     code="ollama_down",
                 )
             )
-        elif not model_is_installed(effective_model, installed):
+        elif not model_is_installed(effective_model, fetched):
             results.append(
                 CheckResult(
                     name="Ollama",
@@ -241,6 +396,111 @@ def run_preflight(
                     detail=f"Reachable; model '{effective_model}' installed",
                 )
             )
+    elif source == "ninerouter":
+        if not env["has_ninerouter_api_key"]:
+            results.append(
+                CheckResult(
+                    name="9router",
+                    ok=False,
+                    detail="API key missing or wrong",
+                    hint="Add NINEROUTER_API_KEY in .env (copy from the 9router dashboard).",
+                    code="ninerouter_issue",
+                )
+            )
+        else:
+            reachable, fetched, err = (
+                fetch_models(env["ninerouter_base_url"])
+                if fetch_models is not None
+                else fetch_models_for_source("ninerouter", root_dir, env=env, opener=opener)
+            )
+            if not reachable:
+                results.append(
+                    CheckResult(
+                        name="9router",
+                        ok=False,
+                        detail=err or f"9router not running at {env['ninerouter_base_url']}",
+                        hint="Start 9router or check NINEROUTER_API_KEY in .env.",
+                        code="ninerouter_issue",
+                    )
+                )
+            elif not fetched:
+                results.append(
+                    CheckResult(
+                        name="9router",
+                        ok=False,
+                        detail=err or "No models found - connect a provider in the 9router dashboard",
+                        hint="Open the 9router dashboard and connect a provider.",
+                        code="ninerouter_issue",
+                    )
+                )
+            elif not effective_model or effective_model not in fetched:
+                results.append(
+                    CheckResult(
+                        name="9router",
+                        ok=False,
+                        detail=f"Model '{effective_model or '(unset)'}' not found in 9router /models",
+                        hint="Pick a model from the Model dropdown or update NINEROUTER_MODEL in .env.",
+                        code="ninerouter_issue",
+                    )
+                )
+            else:
+                results.append(
+                    CheckResult(
+                        name="9router",
+                        ok=True,
+                        detail=f"Reachable; model '{effective_model}' available",
+                    )
+                )
+    elif source == "gemini":
+        if not env["has_gemini_api_key"]:
+            results.append(
+                CheckResult(
+                    name="Gemini",
+                    ok=False,
+                    detail="API key missing or wrong",
+                    hint="Add GEMINI_API_KEY in .env.",
+                )
+            )
+        else:
+            reachable, fetched, err = (
+                fetch_models("gemini")
+                if fetch_models is not None
+                else fetch_models_for_source("gemini", root_dir, env=env, opener=opener)
+            )
+            if not reachable:
+                results.append(
+                    CheckResult(
+                        name="Gemini",
+                        ok=False,
+                        detail=err or "Gemini API not reachable",
+                        hint="Check GEMINI_API_KEY in .env and your internet connection.",
+                    )
+                )
+            elif not effective_model or effective_model not in fetched:
+                results.append(
+                    CheckResult(
+                        name="Gemini",
+                        ok=False,
+                        detail=f"Model '{effective_model or '(unset)'}' not found in Gemini models",
+                        hint="Pick a model from the Model dropdown or update GEMINI_MODEL in .env.",
+                    )
+                )
+            else:
+                results.append(
+                    CheckResult(
+                        name="Gemini",
+                        ok=True,
+                        detail=f"Key set; model '{effective_model}' available",
+                    )
+                )
+    else:
+        results.append(
+            CheckResult(
+                name="LLM",
+                ok=True,
+                detail=f"Using {source_label(source)} from .env",
+            )
+        )
 
     port = int(env["panel_port"])
     host = str(env["panel_host"])
@@ -270,7 +530,7 @@ def run_preflight(
             )
         )
 
-    return results, installed
+    return results, fetched
 
 
 def backup_database(
@@ -333,21 +593,27 @@ def collect_versions() -> dict[str, str]:
 def build_diagnostics(
     *,
     status: BotStatus,
-    selected_model: str,
-    env_model: str,
+    selected_source: str = "",
+    selected_model: str = "",
+    env_source: str = "ollama",
+    env_model: str = "",
     preflight: list[CheckResult],
     log_path: Path,
     log_lines: int = 60,
 ) -> str:
-    """Build a redacted diagnostics report for clipboard sharing."""
+    """Build a redacted diagnostics report for clipboard sharing (never includes API keys)."""
     versions = collect_versions()
-    effective = selected_model.strip() or env_model
+    eff_source = selected_source.strip() or env_source
+    eff_model = selected_model.strip() or env_model
+    running_src = status.llm_provider or "-"
+    running_model = status.llm_model or status.ollama_model or "-"
     lines = [
         "=== Pachinko Control Diagnostics ===",
         f"Bot state: {status.state} (external={status.external}, pid={status.pid}, uptime={status.uptime}s)",
         f"Discord ready: {status.discord_ready} | LLM ok: {status.llm_ok} | Voice sessions: {status.voice_sessions}",
         f"Versions: Python {versions['python']} | py-cord {versions['py-cord']} | yt-dlp {versions['yt-dlp']}",
-        f"Model: selected={selected_model or '(use .env)'} | effective={effective} | running={status.ollama_model or '-'}",
+        f"LLM source: selected={selected_source or '(use .env)'} | effective={eff_source} | running={running_src}",
+        f"LLM model: selected={selected_model or '(use .env)'} | effective={eff_model} | running={running_model}",
         "",
         "--- Pre-flight ---",
     ]

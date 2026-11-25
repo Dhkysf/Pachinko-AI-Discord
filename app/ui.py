@@ -17,12 +17,16 @@ from app.extras import (
     CheckResult,
     backup_database,
     build_diagnostics,
+    fetch_models_for_source,
     fetch_ollama_models,
+    ninerouter_dashboard_url,
     run_preflight,
     start_ollama,
     warm_up_ollama,
 )
 from app.process import (
+    LLM_SOURCES,
+    MODEL_SETTING_KEY,
     STATE_ALREADY_RUNNING,
     STATE_CRASHED,
     STATE_RUNNING,
@@ -31,16 +35,20 @@ from app.process import (
     STATE_STOPPING,
     BotProcessManager,
     BotStatus,
+    effective_llm_selection,
     format_uptime,
     load_settings,
     read_env_summary,
     read_panel_port,
     save_settings,
+    source_label,
     tail_log_lines,
 )
 from app.tray import TrayController, make_icon_image, status_color
 
-_MODEL_ENV_LABEL = "(use .env)"
+_ENV_LABEL = "(use .env)"
+_SOURCE_LABEL_TO_KEY = {_ENV_LABEL: "", "Ollama": "ollama", "9router": "ninerouter", "Gemini": "gemini"}
+_SOURCE_KEY_TO_LABEL = {v: k for k, v in _SOURCE_LABEL_TO_KEY.items()}
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -69,9 +77,11 @@ class PachinkoControlApp:
         self._last_log_sig: tuple[int, int] | None = None
         self._last_status = BotStatus(state=STATE_STOPPED)
         self._warmed_run_key: tuple[int | None, int | None] | None = None
-        self._installed_models: list[str] = []
+        self._model_cache: dict[str, list[str]] = {}
+        self._model_errors: dict[str, str] = {}
+        self._fetch_seq = 0
 
-        self.manager.ollama_model = self.settings["ollama_model"]
+        self._sync_manager_llm()
 
         self.root.title("Pachinko Control")
         self.root.geometry("760x620")
@@ -82,7 +92,7 @@ class PachinkoControlApp:
 
         self._build_ui()
         self._sync_startup_checkbox()
-        self.refresh_models()
+        self._sync_model_controls(fetch_if_needed=True)
         self._poll_loop()
 
     def attach_tray(self, tray: TrayController) -> None:
@@ -126,6 +136,8 @@ class PachinkoControlApp:
         row1.pack(fill="x", pady=(0, 4))
         self._btn_start = ttk.Button(row1, text="Start bot", command=self.start_bot)
         self._btn_stop = ttk.Button(row1, text="Stop bot", command=self.stop_bot)
+        style = ttk.Style(self.root)
+        style.configure("RestartHighlight.TButton", foreground="#b45309", font=("Segoe UI", 9, "bold"))
         self._btn_restart = ttk.Button(row1, text="Restart bot", command=self.restart_bot)
         self._btn_panel = ttk.Button(row1, text="Open web panel", command=self.open_web_panel)
         self._btn_preflight = ttk.Button(row1, text="Check setup", command=self.check_setup)
@@ -189,19 +201,32 @@ class PachinkoControlApp:
 
         model_row = ttk.Frame(cfg_frame)
         model_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        ttk.Label(model_row, text="Ollama model:").pack(side="left", padx=(0, 6))
-        saved_model = self.settings["ollama_model"]
-        self._var_model = tk.StringVar(value=saved_model or _MODEL_ENV_LABEL)
+        ttk.Label(model_row, text="LLM source:").pack(side="left", padx=(0, 6))
+        saved_src = self.settings["llm_source"]
+        self._var_source = tk.StringVar(value=_SOURCE_KEY_TO_LABEL.get(saved_src, _ENV_LABEL))
+        self._source_combo = ttk.Combobox(
+            model_row,
+            textvariable=self._var_source,
+            state="readonly",
+            width=12,
+            values=[_ENV_LABEL, "Ollama", "9router", "Gemini"],
+        )
+        self._source_combo.pack(side="left", padx=(0, 10))
+        self._source_combo.bind("<<ComboboxSelected>>", self._on_source_selected)
+
+        ttk.Label(model_row, text="Model:").pack(side="left", padx=(0, 6))
+        self._var_model = tk.StringVar(value=_ENV_LABEL)
         self._model_combo = ttk.Combobox(
             model_row,
             textvariable=self._var_model,
             state="readonly",
-            width=28,
-            values=[_MODEL_ENV_LABEL] + ([saved_model] if saved_model else []),
+            width=26,
+            values=[_ENV_LABEL],
         )
         self._model_combo.pack(side="left", padx=(0, 6))
         self._model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
-        ttk.Button(model_row, text="Refresh", command=self.refresh_models).pack(side="left", padx=(0, 8))
+        self._btn_refresh = ttk.Button(model_row, text="Refresh", command=self.refresh_models)
+        self._btn_refresh.pack(side="left", padx=(0, 8))
         self._restart_needed_var = tk.StringVar(value="")
         ttk.Label(
             model_row,
@@ -209,6 +234,16 @@ class PachinkoControlApp:
             foreground="#d97706",
             font=("Segoe UI", 9, "bold"),
         ).pack(side="left")
+
+        err_row = ttk.Frame(cfg_frame)
+        err_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._model_err_var = tk.StringVar(value="")
+        ttk.Label(err_row, textvariable=self._model_err_var, foreground="#dc2626").pack(side="left")
+        self._btn_9router_dash = ttk.Button(
+            err_row,
+            text="Open 9router dashboard",
+            command=self.open_ninerouter_dashboard,
+        )
 
         # --- Log view ---
         log_frame = ttk.LabelFrame(outer, text="Logs (data/logs/pachinko.log)", padding=8)
@@ -319,14 +354,34 @@ class PachinkoControlApp:
         ev.wait()
         return result[0]
 
+    def _selected_source(self) -> str:
+        return self.settings.get("llm_source", "")
+
+    def _selected_model(self) -> str:
+        src = self._selected_source()
+        if src not in LLM_SOURCES:
+            return ""
+        return self.settings.get(MODEL_SETTING_KEY[src], "")
+
+    def _sync_manager_llm(self) -> None:
+        self.manager.llm_source = self._selected_source()
+        self.manager.llm_model = self._selected_model()
+
+    def open_ninerouter_dashboard(self) -> None:
+        env = read_env_summary(self.manager.root_dir)
+        webbrowser.open(ninerouter_dashboard_url(env["ninerouter_base_url"]))
+
     def start_bot(self) -> None:
         def task() -> None:
+            src = self._selected_source()
             results, models = run_preflight(
                 self.manager.root_dir,
-                selected_model=self.settings["ollama_model"],
+                selected_source=src,
+                selected_model=self._selected_model(),
                 bot_running=False,
             )
-            self._apply_models(models)
+            if src in LLM_SOURCES and models:
+                self.root.after(0, lambda s=src, m=models: self._apply_models(s, True, m, ""))
             if all(r.ok for r in results):
                 self.manager.start()
             else:
@@ -336,51 +391,116 @@ class PachinkoControlApp:
 
     def check_setup(self) -> None:
         def task() -> None:
+            src = self._selected_source()
             running = self._is_bot_active(self._last_status)
             results, models = run_preflight(
                 self.manager.root_dir,
-                selected_model=self.settings["ollama_model"],
+                selected_source=src,
+                selected_model=self._selected_model(),
                 bot_running=running,
             )
-            self._apply_models(models)
+            if src in LLM_SOURCES and models:
+                self.root.after(0, lambda s=src, m=models: self._apply_models(s, True, m, ""))
             self.root.after(0, lambda: self._show_preflight_dialog(results, allow_start=False))
 
         self._run_bg(task)
 
     def refresh_models(self) -> None:
+        src = self._selected_source()
+        if src not in LLM_SOURCES:
+            return
+        self._fetch_seq += 1
+        seq = self._fetch_seq
+
         def worker() -> None:
-            env = read_env_summary(self.manager.root_dir)
-            reachable, models, _ = fetch_ollama_models(env["ollama_base_url"])
-            if reachable:
-                self.root.after(0, lambda: self._apply_models(models))
+            reachable, models, err = fetch_models_for_source(src, self.manager.root_dir, timeout=5.0)
+            self.root.after(0, lambda: self._on_models_fetched(seq, src, reachable, models, err))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _apply_models(self, models: list[str]) -> None:
-        if models:
-            self._installed_models = list(models)
-        current = self.settings["ollama_model"]
-        values = [_MODEL_ENV_LABEL, *self._installed_models]
+    def _on_models_fetched(
+        self,
+        seq: int,
+        source: str,
+        reachable: bool,
+        models: list[str],
+        err: str,
+    ) -> None:
+        if seq != self._fetch_seq or source != self._selected_source():
+            return
+        self._apply_models(source, reachable, models, err)
+
+    def _apply_models(self, source: str, reachable: bool, models: list[str], err: str) -> None:
+        if reachable:
+            self._model_cache[source] = list(models)
+        if err:
+            self._model_errors[source] = err
+        else:
+            self._model_errors.pop(source, None)
+        if source == self._selected_source():
+            self._sync_model_controls(fetch_if_needed=False)
+
+    def _sync_model_controls(self, *, fetch_if_needed: bool) -> None:
+        src = self._selected_source()
+        if src not in LLM_SOURCES:
+            self._var_model.set(_ENV_LABEL)
+            self._model_combo.configure(values=[_ENV_LABEL], state="disabled")
+            self._btn_refresh.configure(state="disabled")
+            self._model_err_var.set("")
+            self._btn_9router_dash.pack_forget()
+            return
+
+        self._model_combo.configure(state="readonly")
+        self._btn_refresh.configure(state="normal")
+        if src == "ninerouter":
+            self._btn_9router_dash.pack(side="right")
+        else:
+            self._btn_9router_dash.pack_forget()
+
+        cached = self._model_cache.get(src, [])
+        current = self._selected_model()
+        values = [_ENV_LABEL, *cached]
         if current and current not in values:
             values.append(current)
-        if hasattr(self, "_model_combo"):
-            self._model_combo.configure(values=values)
+        self._model_combo.configure(values=values)
+        self._var_model.set(current or _ENV_LABEL)
+        self._model_err_var.set(self._model_errors.get(src, ""))
+
+        if fetch_if_needed and src not in self._model_cache:
+            self.refresh_models()
+
+    def _on_source_selected(self, _event: object = None) -> None:
+        label = self._var_source.get().strip()
+        src = _SOURCE_LABEL_TO_KEY.get(label, "")
+        self.settings["llm_source"] = src
+        self._sync_manager_llm()
+        save_settings(self.settings_path, self.settings)
+        self._sync_model_controls(fetch_if_needed=True)
+        self._update_restart_needed(self._last_status)
 
     def _on_model_selected(self, _event: object = None) -> None:
+        src = self._selected_source()
+        if src not in LLM_SOURCES:
+            return
         raw = self._var_model.get().strip()
-        chosen = "" if raw == _MODEL_ENV_LABEL else raw
-        self.settings["ollama_model"] = chosen
-        self.manager.ollama_model = chosen
+        chosen = "" if raw == _ENV_LABEL else raw
+        self.settings[MODEL_SETTING_KEY[src]] = chosen
+        self._sync_manager_llm()
         save_settings(self.settings_path, self.settings)
         self._update_restart_needed(self._last_status)
 
     def _update_restart_needed(self, status: BotStatus) -> None:
-        if not self._is_bot_active(status) or not status.ollama_model:
+        running_model = status.llm_model or status.ollama_model
+        if not self._is_bot_active(status) or not (status.llm_provider or running_model):
             self._restart_needed_var.set("")
+            self._btn_restart.configure(style="TButton")
             return
-        env_model = read_env_summary(self.manager.root_dir)["ollama_model"]
-        effective = self.settings["ollama_model"] or env_model
-        self._restart_needed_var.set("Restart needed" if effective != status.ollama_model else "")
+        env = read_env_summary(self.manager.root_dir)
+        eff_src, eff_model = effective_llm_selection(self.settings, env)
+        running_src = (status.llm_provider or env["llm_provider"]).strip().lower()
+        mismatch = (eff_src != running_src) or (bool(running_model) and eff_model != running_model)
+        self._restart_needed_var.set("Restart needed" if mismatch else "")
+        self._btn_restart.configure(style="RestartHighlight.TButton" if mismatch else "TButton")
 
     @staticmethod
     def _is_bot_active(status: BotStatus) -> bool:
@@ -426,12 +546,15 @@ class PachinkoControlApp:
             btn_row.pack(fill="x", pady=(10, 0))
 
             def recheck() -> None:
+                src = self._selected_source()
                 new_res, models = run_preflight(
                     self.manager.root_dir,
-                    selected_model=self.settings["ollama_model"],
+                    selected_source=src,
+                    selected_model=self._selected_model(),
                     bot_running=self._is_bot_active(self._last_status),
                 )
-                self._apply_models(models)
+                if src in LLM_SOURCES and models:
+                    self._apply_models(src, True, models, "")
                 render(new_res)
 
             if any((not r.ok) and r.code == "ollama_down" for r in items):
@@ -446,11 +569,19 @@ class PachinkoControlApp:
                             read_env_summary(self.manager.root_dir)["ollama_base_url"]
                         )
                         if reachable:
-                            self._apply_models(models)
+                            self._apply_models("ollama", True, models, "")
                             break
                     recheck()
 
                 ttk.Button(btn_row, text="Start Ollama", command=launch_ollama).pack(side="left", padx=(0, 6))
+
+            eff_src, _ = effective_llm_selection(self.settings, read_env_summary(self.manager.root_dir))
+            if eff_src == "ninerouter":
+                ttk.Button(
+                    btn_row,
+                    text="Open 9router dashboard",
+                    command=self.open_ninerouter_dashboard,
+                ).pack(side="left", padx=(0, 6))
 
             ttk.Button(btn_row, text="Re-check", command=recheck).pack(side="left", padx=(0, 6))
             if allow_start:
@@ -606,15 +737,22 @@ class PachinkoControlApp:
         def task() -> None:
             status = self.manager.poll()
             env = read_env_summary(self.manager.root_dir)
+            src = self._selected_source()
+            mdl = self._selected_model()
+            env_src = env["llm_provider"]
+            env_mdl = str(env.get(f"{env_src}_model", "") or "")
             preflight, _ = run_preflight(
                 self.manager.root_dir,
-                selected_model=self.settings["ollama_model"],
+                selected_source=src,
+                selected_model=mdl,
                 bot_running=self._is_bot_active(status),
             )
             text = build_diagnostics(
                 status=status,
-                selected_model=self.settings["ollama_model"],
-                env_model=env["ollama_model"],
+                selected_source=src,
+                selected_model=mdl,
+                env_source=env_src,
+                env_model=env_mdl,
                 preflight=preflight,
                 log_path=self.manager.log_path,
             )
@@ -699,7 +837,12 @@ class PachinkoControlApp:
         self._state_var.set(label)
         self._uptime_var.set(f"Uptime: {format_uptime(status.uptime)}" if status.uptime > 0 else "Uptime: -")
         self._discord_var.set(f"Discord: {'ready' if status.discord_ready else 'not ready'}")
-        self._llm_var.set(f"LLM (Ollama): {'ok' if status.llm_ok else 'error'}")
+        env = read_env_summary(self.manager.root_dir)
+        active_src = status.llm_provider or self._selected_source() or env["llm_provider"]
+        src_name = source_label(active_src)
+        active_model = status.llm_model or status.ollama_model
+        llm_state = "ok" if status.llm_ok else "error"
+        self._llm_var.set(f"LLM ({src_name}): {llm_state}" + (f" ({active_model})" if active_model else ""))
         self._voice_var.set(f"Voice sessions: {status.voice_sessions}")
 
         self._update_buttons(status)
@@ -713,15 +856,14 @@ class PachinkoControlApp:
                 and not status.llm_ok
                 and status.state in (STATE_RUNNING, STATE_STARTING)
             ):
-                self.tray.notify("Ollama health changed to error.")
+                self.tray.notify(f"{src_name} health changed to error.")
 
         if status.discord_ready:
             run_key = (status.pid, status.started)
             if run_key != self._warmed_run_key:
                 self._warmed_run_key = run_key
-                env = read_env_summary(self.manager.root_dir)
-                if env["llm_provider"] == "ollama":
-                    model = status.ollama_model or self.settings["ollama_model"] or env["ollama_model"]
+                if active_src == "ollama":
+                    model = active_model or self.settings["model_ollama"] or env["ollama_model"]
                     threading.Thread(
                         target=warm_up_ollama,
                         args=(env["ollama_base_url"], model, env["ollama_keep_alive"]),

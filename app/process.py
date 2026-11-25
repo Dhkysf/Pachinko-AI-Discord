@@ -35,8 +35,59 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "start_with_windows": False,
     "auto_restart_on_crash": False,
     "minimize_to_tray_on_close": True,
-    "ollama_model": "",
+    "llm_source": "",
+    "model_ollama": "",
+    "model_ninerouter": "",
+    "model_gemini": "",
 }
+
+LLM_SOURCES = ("ollama", "ninerouter", "gemini")
+SOURCE_LABELS: dict[str, str] = {
+    "ollama": "Ollama",
+    "ninerouter": "9router",
+    "gemini": "Gemini",
+    "openai_compat": "OpenAI-compat",
+}
+MODEL_SETTING_KEY: dict[str, str] = {
+    "ollama": "model_ollama",
+    "ninerouter": "model_ninerouter",
+    "gemini": "model_gemini",
+}
+SOURCE_MODEL_ENV_VAR: dict[str, str] = {
+    "ollama": "OLLAMA_MODEL",
+    "ninerouter": "NINEROUTER_MODEL",
+    "gemini": "GEMINI_MODEL",
+}
+_LLM_OVERRIDE_VARS = ("LLM_PROVIDER", "OLLAMA_MODEL", "NINEROUTER_MODEL", "GEMINI_MODEL")
+
+
+def source_label(source: str) -> str:
+    """Return display label for an LLM source."""
+    key = (source or "").strip().lower()
+    return SOURCE_LABELS.get(key, key or "Ollama")
+
+
+def build_llm_env_overrides(llm_source: str, llm_model: str) -> dict[str, str]:
+    """Return process env overrides for the selected LLM source/model, or {} for '(use .env)'."""
+    src = (llm_source or "").strip().lower()
+    if src not in SOURCE_MODEL_ENV_VAR:
+        return {}
+    out = {"LLM_PROVIDER": src}
+    model = (llm_model or "").strip()
+    if model:
+        out[SOURCE_MODEL_ENV_VAR[src]] = model
+    return out
+
+
+def effective_llm_selection(settings: dict[str, Any], env: dict[str, Any]) -> tuple[str, str]:
+    """Resolve effective (source, model) from UI settings falling back to .env summary."""
+    src = str(settings.get("llm_source", "") or "").strip().lower()
+    if src not in LLM_SOURCES:
+        env_src = str(env.get("llm_provider", "ollama") or "ollama").strip().lower()
+        return env_src, str(env.get(f"{env_src}_model", "") or "").strip()
+    model_key = MODEL_SETTING_KEY[src]
+    chosen = str(settings.get(model_key, "") or "").strip()
+    return src, chosen or str(env.get(f"{src}_model", "") or "").strip()
 
 _STATUS_MAP = {
     "starting": STATE_STARTING,
@@ -56,6 +107,8 @@ class BotStatus:
     llm_ok: bool = False
     voice_sessions: int = 0
     exit_code: int | None = None
+    llm_provider: str = ""
+    llm_model: str = ""
     ollama_model: str = ""
 
 
@@ -93,7 +146,7 @@ def tail_log_lines(log_path: Path, max_lines: int = 300, max_bytes: int = 131072
 
 
 def load_settings(path: Path) -> dict[str, Any]:
-    """Load app_settings.json merged over DEFAULT_SETTINGS."""
+    """Load app_settings.json merged over DEFAULT_SETTINGS, migrating legacy ollama_model."""
     settings: dict[str, Any] = dict(DEFAULT_SETTINGS)
     if not path.exists():
         return settings
@@ -106,6 +159,10 @@ def load_settings(path: Path) -> dict[str, Any]:
                         settings[key] = bool(raw[key])
                     else:
                         settings[key] = str(raw[key] or "").strip()
+            if "model_ollama" not in raw and raw.get("ollama_model"):
+                settings["model_ollama"] = str(raw["ollama_model"] or "").strip()
+            src = str(settings.get("llm_source", "")).strip().lower()
+            settings["llm_source"] = src if src in LLM_SOURCES else ""
     except (OSError, ValueError, TypeError):
         pass
     return settings
@@ -121,15 +178,21 @@ def save_settings(path: Path, settings: dict[str, Any]) -> None:
 
 
 def read_env_summary(root_dir: Path) -> dict[str, Any]:
-    """Read non-secret .env summary (presence of DISCORD_TOKEN only, never its value)."""
+    """Read non-secret .env summary (presence of keys only, never their values)."""
     env_path = root_dir / ".env"
     summary: dict[str, Any] = {
         "env_exists": env_path.exists(),
         "has_discord_token": False,
+        "has_ninerouter_api_key": False,
+        "has_gemini_api_key": False,
         "llm_provider": "ollama",
         "ollama_base_url": "http://127.0.0.1:11434",
         "ollama_model": "qwen3:8b",
         "ollama_keep_alive": "15m",
+        "ninerouter_base_url": "http://127.0.0.1:20128/v1",
+        "ninerouter_model": "",
+        "gemini_model": "gemini-3.8-flash",
+        "openai_compat_model": "qwen3-8b",
         "panel_host": "127.0.0.1",
         "panel_port": 7878,
     }
@@ -141,6 +204,8 @@ def read_env_summary(root_dir: Path) -> dict[str, Any]:
         return summary
 
     summary["has_discord_token"] = bool((vals.get("DISCORD_TOKEN") or "").strip())
+    summary["has_ninerouter_api_key"] = bool((vals.get("NINEROUTER_API_KEY") or "").strip())
+    summary["has_gemini_api_key"] = bool((vals.get("GEMINI_API_KEY") or "").strip())
     if (vals.get("LLM_PROVIDER") or "").strip():
         summary["llm_provider"] = str(vals["LLM_PROVIDER"]).strip().lower()
     if (vals.get("OLLAMA_BASE_URL") or "").strip():
@@ -149,6 +214,14 @@ def read_env_summary(root_dir: Path) -> dict[str, Any]:
         summary["ollama_model"] = str(vals["OLLAMA_MODEL"]).strip()
     if (vals.get("OLLAMA_KEEP_ALIVE") or "").strip():
         summary["ollama_keep_alive"] = str(vals["OLLAMA_KEEP_ALIVE"]).strip()
+    if (vals.get("NINEROUTER_BASE_URL") or "").strip():
+        summary["ninerouter_base_url"] = str(vals["NINEROUTER_BASE_URL"]).strip()
+    if (vals.get("NINEROUTER_MODEL") or "").strip():
+        summary["ninerouter_model"] = str(vals["NINEROUTER_MODEL"]).strip()
+    if (vals.get("GEMINI_MODEL") or "").strip():
+        summary["gemini_model"] = str(vals["GEMINI_MODEL"]).strip()
+    if (vals.get("OPENAI_MODEL") or "").strip():
+        summary["openai_compat_model"] = str(vals["OPENAI_MODEL"]).strip()
     if (vals.get("PANEL_HOST") or "").strip():
         summary["panel_host"] = str(vals["PANEL_HOST"]).strip()
     raw_port = vals.get("PANEL_PORT")
@@ -158,6 +231,21 @@ def read_env_summary(root_dir: Path) -> dict[str, Any]:
         except (ValueError, TypeError):
             pass
     return summary
+
+
+def read_llm_api_key(root_dir: Path, source: str) -> str:
+    """Read only the requested provider API key from .env for model-list requests (never store/log)."""
+    key_name = {"ninerouter": "NINEROUTER_API_KEY", "gemini": "GEMINI_API_KEY"}.get((source or "").strip().lower())
+    if not key_name:
+        return ""
+    env_path = root_dir / ".env"
+    if not env_path.exists():
+        return ""
+    try:
+        vals = dotenv_values(env_path)
+    except OSError:
+        return ""
+    return str(vals.get(key_name) or "").strip()
 
 
 def read_panel_port(root_dir: Path) -> int:
@@ -180,7 +268,8 @@ class BotProcessManager:
         data_dir: Path | None = None,
         bot_cmd: list[str] | None = None,
         auto_restart: bool = False,
-        ollama_model: str = "",
+        llm_source: str = "",
+        llm_model: str = "",
         max_restarts: int = 3,
         restart_window_sec: float = 600.0,
         is_python_pid: Callable[[int], bool] = is_python_process,
@@ -198,7 +287,8 @@ class BotProcessManager:
             str(self.root_dir / "main.py"),
         ]
         self.auto_restart = auto_restart
-        self.ollama_model = ollama_model.strip()
+        self.llm_source = llm_source.strip().lower()
+        self.llm_model = llm_model.strip()
         self.max_restarts = max_restarts
         self.restart_window_sec = restart_window_sec
         self._is_python_pid = is_python_pid
@@ -244,11 +334,9 @@ class BotProcessManager:
         self._stop_requested = False
         self._last_status = None
         env = os.environ.copy()
-        model = self.ollama_model.strip()
-        if model:
-            env["OLLAMA_MODEL"] = model
-        else:
-            env.pop("OLLAMA_MODEL", None)
+        for var in _LLM_OVERRIDE_VARS:
+            env.pop(var, None)
+        env.update(build_llm_env_overrides(self.llm_source, self.llm_model))
         self._proc = subprocess.Popen(
             self.bot_cmd,
             cwd=str(self.root_dir),
@@ -389,6 +477,8 @@ class BotProcessManager:
             started_int = started if isinstance(started, int) else None
             uptime = max(0, int(time.time()) - started_int) if started_int is not None else 0
             pid = data.get("pid") if isinstance(data.get("pid"), int) else expected_pid
+            ollama_model = str(data.get("ollama_model", "") or "")
+            llm_model = str(data.get("llm_model", "") or "") or ollama_model
             status = BotStatus(
                 state=state,
                 external=external,
@@ -398,7 +488,9 @@ class BotProcessManager:
                 discord_ready=bool(data.get("discord_ready", False)),
                 llm_ok=bool(data.get("llm_ok", False)),
                 voice_sessions=int(data.get("voice_sessions", 0) or 0),
-                ollama_model=str(data.get("ollama_model", "") or ""),
+                llm_provider=str(data.get("llm_provider", "") or ""),
+                llm_model=llm_model,
+                ollama_model=ollama_model,
             )
             self._last_status = status
             return status
@@ -416,6 +508,8 @@ class BotProcessManager:
                 discord_ready=prev.discord_ready,
                 llm_ok=prev.llm_ok,
                 voice_sessions=prev.voice_sessions,
+                llm_provider=prev.llm_provider,
+                llm_model=prev.llm_model,
                 ollama_model=prev.ollama_model,
             )
 
@@ -466,6 +560,8 @@ class BotProcessManager:
                         llm_ok=status.llm_ok,
                         voice_sessions=status.voice_sessions,
                         exit_code=self._last_exit_code,
+                        llm_provider=status.llm_provider,
+                        llm_model=status.llm_model,
                         ollama_model=status.ollama_model,
                     )
                 status = self._status_from_file(ext_pid, STATE_RUNNING, external=True)
@@ -479,6 +575,8 @@ class BotProcessManager:
                         discord_ready=status.discord_ready,
                         llm_ok=status.llm_ok,
                         voice_sessions=status.voice_sessions,
+                        llm_provider=status.llm_provider,
+                        llm_model=status.llm_model,
                         ollama_model=status.ollama_model,
                     )
                 return status
