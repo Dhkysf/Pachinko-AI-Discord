@@ -25,7 +25,14 @@ _URL_RE = re.compile(r"https?://\S+")
 _PREFIX_STRIP_RE = re.compile(r"^\[[^\]]+\]:\s*")
 _LLM_ERROR_REPLY = "Otakku lagi error, coba lagi bentar ya"
 
-_REMINDER_VERB_RE = re.compile(r"\b(?:ingetin|ingatkan|ingatin|remind|pasang\s+timer|alarm)\b", re.IGNORECASE)
+_REMINDER_VERB_RE = re.compile(
+    r"\b(?:ingetin|ingatkan|ingatin|remind|(?:pasang(?:in|kan)?|set|bikin(?:in)?|buat(?:in|kan)?)\s+(?:alarm|timer|pengingat))\b",
+    re.IGNORECASE,
+)
+_REMINDER_NEG_OR_PAST_RE = re.compile(
+    r"\b(?:jangan|(?:nggak|gak|ngga|ga)\s+usah|tadi|kemarin|barusan|s?udah\s+lewat)\b",
+    re.IGNORECASE,
+)
 _NUM_WORDS = {
     "tiga puluh": 30.0,
     "lima belas": 15.0,
@@ -41,14 +48,16 @@ _NUM_WORDS = {
     "satu": 1.0,
 }
 _UNIT_MULT = {"detik": 1.0 / 60.0, "menit": 1.0, "jam": 60.0}
+_NUM_WORDS_PAT = r"(?:tiga\s+puluh|lima\s+belas|sepuluh|sembilan|delapan|tujuh|enam|lima|empat|tiga|dua|satu)"
+_TIME_ATOM_PAT = (
+    rf"(?:\bsejam\b"
+    rf"|\bsemenit\b"
+    rf"|(?:\b\d+(?:[.,]\d+)?|\b{_NUM_WORDS_PAT}\b)\s*(?:detik|menit|jam)\b)"
+)
+_TIME_ATOM_RE = re.compile(_TIME_ATOM_PAT, re.IGNORECASE)
 _TIME_EXPR_RE = re.compile(
     r"(?:\b(?:dalam|setelah)\s+)?"
-    r"(?P<expr>"
-    r"\bsetengah\s+jam\b"
-    r"|\bsejam\b"
-    r"|\bsemenit\b"
-    r"|(?:\d+(?:[.,]\d+)?|\b(?:tiga\s+puluh|lima\s+belas|sepuluh|sembilan|delapan|tujuh|enam|lima|empat|tiga|dua|satu)\b)\s*(?:detik|menit|jam)\b"
-    r")"
+    rf"(?P<expr>\bsetengah\s+jam\b|{_TIME_ATOM_PAT}(?:\s+(?:dan\s+)?{_TIME_ATOM_PAT})*(?:\s+setengah\b)?)"
     r"(?:\s+(?:lagi|dari\s+sekarang))?",
     re.IGNORECASE,
 )
@@ -58,6 +67,41 @@ _REMINDER_FILLER_RE = re.compile(
 )
 
 
+def _parse_time_expr(expr: str) -> float | None:
+    norm = re.sub(r"\s+", " ", expr.strip().lower())
+    if norm == "setengah jam":
+        return 30.0
+    total = 0.0
+    last_unit: str | None = None
+    for m in _TIME_ATOM_RE.finditer(norm):
+        atom = m.group(0)
+        if atom == "sejam":
+            total += 60.0
+            last_unit = "jam"
+        elif atom == "semenit":
+            total += 1.0
+            last_unit = "menit"
+        else:
+            m_num = re.match(r"^(\d+(?:[.,]\d+)?|[a-z ]+?)\s*(detik|menit|jam)$", atom)
+            if not m_num:
+                return None
+            raw_amt, unit = m_num.group(1).strip(), m_num.group(2)
+            if raw_amt in _NUM_WORDS:
+                amt = _NUM_WORDS[raw_amt]
+            else:
+                try:
+                    amt = float(raw_amt.replace(",", "."))
+                except ValueError:
+                    return None
+            total += amt * _UNIT_MULT[unit]
+            last_unit = unit
+    if last_unit is None:
+        return None
+    if norm.endswith(" setengah"):
+        total += 0.5 * _UNIT_MULT[last_unit]
+    return total if total > 0 else None
+
+
 def parse_reminder_request(text: str) -> tuple[float, str] | None:
     """Parse clear Indonesian reminder requests into `(minutes, note)` or `None`."""
     if not text or not _REMINDER_VERB_RE.search(text):
@@ -65,29 +109,11 @@ def parse_reminder_request(text: str) -> tuple[float, str] | None:
     tm = _TIME_EXPR_RE.search(text)
     if not tm:
         return None
+    if _REMINDER_NEG_OR_PAST_RE.search(text[:tm.start()]):
+        return None
 
-    expr = re.sub(r"\s+", " ", tm.group("expr").strip().lower())
-    if expr == "setengah jam":
-        minutes = 30.0
-    elif expr == "sejam":
-        minutes = 60.0
-    elif expr == "semenit":
-        minutes = 1.0
-    else:
-        m_num = re.match(r"^(\d+(?:[.,]\d+)?|[a-z ]+?)\s*(detik|menit|jam)$", expr)
-        if not m_num:
-            return None
-        raw_amt, unit = m_num.group(1).strip(), m_num.group(2)
-        if raw_amt in _NUM_WORDS:
-            amt = _NUM_WORDS[raw_amt]
-        else:
-            try:
-                amt = float(raw_amt.replace(",", "."))
-            except ValueError:
-                return None
-        minutes = amt * _UNIT_MULT[unit]
-
-    if minutes <= 0:
+    minutes = _parse_time_expr(tm.group("expr"))
+    if minutes is None:
         return None
 
     cleaned = _REMINDER_VERB_RE.sub(" ", text[:tm.start()] + " " + text[tm.end():])
@@ -165,7 +191,11 @@ class BrainRunner:
         room_id: str,
         user_id: str,
         user_name: str,
+        wake_reason: str = "",
+        reply_text: str = "",
     ) -> bool:
+        if wake_reason == "ambient_glance" or not _has_usable_text(reply_text):
+            return False
         if "set_reminder" in called_tools:
             return False
         parsed = parse_reminder_request(user_text)
@@ -289,14 +319,6 @@ class BrainRunner:
                     log.exception("LLM retry failed in text turn")
                     return TurnResult(text=_LLM_ERROR_REPLY, emotion="neutral", silent=False)
 
-            await self._maybe_reminder_fallback(
-                user_text=user_text,
-                called_tools=called_tools,
-                room_id=room_id,
-                user_id=user_id,
-                user_name=user_name,
-            )
-
             raw = resp.text or ""
             if not _has_usable_text(raw):
                 if is_ambient:
@@ -315,6 +337,16 @@ class BrainRunner:
 
             if not clean:
                 return TurnResult(text="", emotion=emotion, silent=True)
+
+            await self._maybe_reminder_fallback(
+                user_text=user_text,
+                called_tools=called_tools,
+                room_id=room_id,
+                user_id=user_id,
+                user_name=user_name,
+                wake_reason=wake_reason,
+                reply_text=raw,
+            )
 
             tid = await self.memory.add_transcript(
                 room_id=room_id,
@@ -374,15 +406,17 @@ class BrainRunner:
                         )
                         messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
                 elif first.text and first.text.strip():
+                    if "<silence/>" in first.text:
+                        return
                     await self._maybe_reminder_fallback(
                         user_text=user_text,
                         called_tools=called_tools,
                         room_id=room_id,
                         user_id=user_id,
                         user_name=user_name,
+                        wake_reason=wake_reason,
+                        reply_text=first.text,
                     )
-                    if "<silence/>" in first.text:
-                        return
                     clean, explicit_emo, feel_raw = extract_tags(first.text)
                     emotion = await self.heart.apply_feel_block(
                         feel_raw,
@@ -445,6 +479,8 @@ class BrainRunner:
                 room_id=room_id,
                 user_id=user_id,
                 user_name=user_name,
+                wake_reason=wake_reason,
+                reply_text=full_raw,
             )
             clean_tail, explicit_emo, feel_raw = extract_tags(full_raw)
             emotion = await self.heart.apply_feel_block(

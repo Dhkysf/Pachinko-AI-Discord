@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import math
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock
 
+from brain.tools import ToolBox
 from core.store import Store
 from memory.manager import VEC_DIM, MemoryManager, _cosine, _quote_fts_term, local_embed
 
@@ -177,6 +180,51 @@ class TestMemoryManager(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.mem.delete_notes([]), 0)
         self.assertEqual(await self.mem.delete_memories([]), 0)
         self.assertFalse(any(t in ("memory.notes_deleted", "memory.memories_deleted") for t, _ in self.bus.events))
+
+    async def test_delete_notes_removes_remember_note_person_and_topic_twins_only(self) -> None:
+        toolbox = ToolBox(self.mem, types.SimpleNamespace(check=AsyncMock(return_value=(True, "ok"))))  # type: ignore[arg-type]
+        await toolbox.execute(
+            "remember_note",
+            {"fact": "Suka kopi susu gula aren", "target": "user"},
+            room_id="r1",
+            user_id="u1",
+            user_name="Budi",
+        )
+        await toolbox.execute(
+            "remember_note",
+            {"fact": "Suka lagu anime malam", "target": "anime"},
+            room_id="r1",
+            user_id="u1",
+            user_name="Budi",
+        )
+        await self.mem.remember("Budi: Suka kopi susu gula aren", scope="global", subject_id="u1")
+
+        # Unrelated memories that must NOT be deleted
+        await self.mem.remember("Budi bilang Suka kopi susu gula aren enak banget", scope="person:u1")
+        await self.mem.remember("Kemarin bahas Suka lagu anime malam di voice chat", scope="global")
+        await self.mem.remember("Andi: Suka kopi susu gula aren", scope="person:u2")
+
+        all_notes = await self.mem.list_all_notes()
+        person_id = next(n["line_id"] for n in all_notes if n["doc_key"] == "person:u1")
+        topic_id = next(n["line_id"] for n in all_notes if n["doc_key"] == "topic:anime")
+
+        self.assertEqual(await self.mem.delete_notes([person_id, topic_id]), 2)
+
+        cur = await self.store.conn.execute("SELECT scope, content FROM memories ORDER BY id")
+        remaining = [(r["scope"], r["content"]) for r in await cur.fetchall()]
+        self.assertEqual(
+            remaining,
+            [
+                ("person:u1", "Budi bilang Suka kopi susu gula aren enak banget"),
+                ("global", "Kemarin bahas Suka lagu anime malam di voice chat"),
+                ("person:u2", "Andi: Suka kopi susu gula aren"),
+            ],
+        )
+
+        recalled_person = await self.mem.recall("kopi susu gula aren", scopes=("global", "person:u1"))
+        self.assertFalse(any(r["content"] == "Budi: Suka kopi susu gula aren" for r in recalled_person))
+        recalled_topic = await self.mem.recall("lagu anime malam", scopes=("global", "person:u1"))
+        self.assertFalse(any(r["content"] == "Budi: Suka lagu anime malam" for r in recalled_topic))
 
 
 if __name__ == "__main__":

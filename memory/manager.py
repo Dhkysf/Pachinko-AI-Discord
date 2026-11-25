@@ -251,12 +251,19 @@ class MemoryManager:
                 for r in rows:
                     doc_key = r["doc_key"]
                     fact = r["fact"]
-                    suffix = f" — {fact}"
+                    dash_suffix = f" — {fact}"
+                    colon_suffix = f": {fact}"
+                    any_person = 0 if doc_key.startswith("person:") else 1
                     await conn.execute(
                         "DELETE FROM memories "
-                        "WHERE (scope = ? AND (content = ? OR substr(content, -length(?)) = ?)) "
-                        "OR (scope = 'global' AND content = ?)",
-                        (doc_key, fact, suffix, suffix, fact),
+                        "WHERE (scope = ? AND (content = ? OR substr(content, -length(?)) = ? OR (length(content) > length(?) AND substr(content, -length(?)) = ?))) "
+                        "OR (scope = 'global' AND (content = ? OR (length(content) > length(?) AND substr(content, -length(?)) = ?))) "
+                        "OR (? = 1 AND substr(scope, 1, 7) = 'person:' AND length(content) > length(?) AND substr(content, -length(?)) = ?)",
+                        (
+                            doc_key, fact, dash_suffix, dash_suffix, colon_suffix, colon_suffix, colon_suffix,
+                            fact, colon_suffix, colon_suffix, colon_suffix,
+                            any_person, colon_suffix, colon_suffix, colon_suffix,
+                        ),
                     )
         if deleted:
             await self.bus.emit("memory.notes_deleted", count=deleted)
