@@ -105,6 +105,11 @@ def create_web_app(
         if not _token_ok(tok):
             raise HTTPException(status_code=401, detail="Invalid panel token")
 
+    def _check_origin(req: Request) -> None:
+        origin = req.headers.get("origin")
+        if origin is not None and origin.lower() not in allowed_origins:
+            raise HTTPException(status_code=403, detail="Origin not allowed")
+
     @app.get("/")
     async def index():
         return FileResponse(str(STATIC_DIR / "index.html"))
@@ -160,6 +165,7 @@ def create_web_app(
 
     @app.post("/api/persona")
     async def api_save_persona(req: Request):
+        _check_origin(req)
         _check_auth(req)
         body = await _json_dict(req)
         if "display_name" in body and body["display_name"] is not None:
@@ -183,6 +189,7 @@ def create_web_app(
 
     @app.post("/api/playground")
     async def api_playground(req: Request):
+        _check_origin(req)
         _check_auth(req)
         body = await _json_dict(req)
         raw_msg = body.get("message", "")
@@ -206,6 +213,7 @@ def create_web_app(
 
     @app.post("/api/people/{user_id}")
     async def api_update_person(user_id: str, req: Request):
+        _check_origin(req)
         _check_auth(req)
         if not (user_id.isascii() and user_id.isdigit()):
             raise HTTPException(status_code=400, detail="Invalid user_id")
@@ -236,6 +244,7 @@ def create_web_app(
 
     @app.post("/api/memory")
     async def api_add_memory(req: Request):
+        _check_origin(req)
         _check_auth(req)
         body = await _json_dict(req)
         raw_fact = body.get("fact", "")
@@ -252,6 +261,7 @@ def create_web_app(
 
     @app.post("/api/runtime")
     async def api_update_runtime(req: Request):
+        _check_origin(req)
         _check_auth(req)
         body = await _json_dict(req)
         for bkey in ("autonomy_paused", "rvc_enabled"):
@@ -278,6 +288,7 @@ def create_web_app(
 
     @app.post("/api/sing/enqueue")
     async def api_sing_enqueue(req: Request):
+        _check_origin(req)
         _check_auth(req)
         body = await _json_dict(req)
         raw_q = body.get("query", "")
@@ -288,6 +299,7 @@ def create_web_app(
 
     @app.post("/api/sing/skip")
     async def api_sing_skip(req: Request):
+        _check_origin(req)
         _check_auth(req)
         return {"ok": singing.skip_current()}
 

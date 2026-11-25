@@ -21,15 +21,21 @@ def _make_app():
         examples_md="",
         lore_entries=[],
     )
+    async def _upsert_note(*_args, **_kwargs):
+        return 1
+
+    async def _remember(*_args, **_kwargs):
+        return 1
+
     return create_web_app(
         store=SimpleNamespace(),
         bus=bus,
         profiles=SimpleNamespace(current=prof),
         heart=SimpleNamespace(state_summary=lambda _t: {"dominant": "neutral", "valence": 0.0, "energy": 0.8, "active_emotions": {}}),
-        memory=SimpleNamespace(),
+        memory=SimpleNamespace(upsert_note=_upsert_note, remember=_remember),
         gate=SimpleNamespace(paused=False),
         brain=SimpleNamespace(),
-        singing=SimpleNamespace(snapshot=lambda: {"current": None, "queue": []}),
+        singing=SimpleNamespace(snapshot=lambda: {"current": None, "queue": []}, skip_current=lambda: True),
     )
 
 
@@ -145,6 +151,38 @@ class TestPanelSecurity(unittest.TestCase):
                 self.assertNotIn("pending_approvals", data["autonomy"])
         finally:
             config.llm_provider = orig_provider
+
+    def test_mutating_api_rejects_foreign_origin_even_without_token(self):
+        config.panel_token = ""
+        client = self._client(_make_app())
+        payload = {"fact": "Suka kopi", "doc_key": "self"}
+
+        self.assertEqual(
+            client.post("/api/memory", json=payload, headers={"Origin": "http://evil.example"}).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post("/api/memory", json=payload, headers={"Origin": "null"}).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post("/api/memory", json=payload, headers={"Origin": "http://127.0.0.1:7878"}).status_code,
+            200,
+        )
+        self.assertEqual(
+            client.post(
+                "/api/memory",
+                json=payload,
+                headers={"Host": "localhost:7878", "Origin": "http://localhost:7878"},
+            ).status_code,
+            200,
+        )
+        self.assertEqual(client.post("/api/memory", json=payload).status_code, 200)
+        self.assertEqual(
+            client.post("/api/sing/skip", headers={"Origin": "http://evil.example"}).status_code,
+            403,
+        )
+        self.assertEqual(client.post("/api/sing/skip").status_code, 200)
 
 
 if __name__ == "__main__":
