@@ -7,6 +7,5 @@ __pycache__/
 data/
 models/
 AUDIT.md
-AUDIT-old.md
 *.lnk
 app/pachinko.ico
