@@ -62,6 +62,52 @@ def _startup_shortcut_path() -> Path:
     return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Pachinko.lnk"
 
 
+def _run_off_ui(root, work: Callable[[], object], done: Callable[[object], None]) -> threading.Thread:
+    """Run blocking `work` on a daemon thread; hand its result (or exception) to `done` on the Tk thread."""
+    def worker() -> None:
+        try:
+            result = work()
+        except Exception as exc:  # done() must still run so the dialog re-enables its buttons
+            result = exc
+        root.after(0, lambda: done(result))
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    return thread
+
+
+def _startup_shortcut_points_here(shortcut: Path, root_dir: Path) -> bool:
+    """True only if the Startup .lnk exists and launches this folder's Pachinko.pyw."""
+    if not shortcut.exists():
+        return False
+    try:
+        res = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(New-Object -ComObject WScript.Shell).CreateShortcut($env:PACHINKO_LNK).Arguments",
+            ],
+            env={**os.environ, "PACHINKO_LNK": str(shortcut)},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=_CREATE_NO_WINDOW,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    target = res.stdout.strip().strip('"')
+    want = root_dir / "Pachinko.pyw"
+    return (
+        res.returncode == 0
+        and bool(target)
+        and os.path.normcase(os.path.abspath(target)) == os.path.normcase(os.path.abspath(str(want)))
+    )
+
+
 class PachinkoControlApp:
     """Thin Tkinter UI wired to BotProcessManager and TrayController."""
 
@@ -265,7 +311,7 @@ class PachinkoControlApp:
         self._log_text.pack(fill="both", expand=True)
 
     def _sync_startup_checkbox(self) -> None:
-        exists = _startup_shortcut_path().exists()
+        exists = _startup_shortcut_points_here(_startup_shortcut_path(), self.manager.root_dir)
         if exists != self._var_start_win.get():
             self._var_start_win.set(exists)
             self.settings["start_with_windows"] = exists
@@ -516,7 +562,51 @@ class PachinkoControlApp:
         body = ttk.Frame(win, padding=10)
         body.pack(fill="both", expand=True)
 
+        action_buttons: list[ttk.Button] = []
+
+        def recheck_work() -> tuple[str, list[CheckResult], list[str]]:
+            src = self._selected_source()
+            new_res, models = run_preflight(
+                self.manager.root_dir,
+                selected_source=src,
+                selected_model=self._selected_model(),
+                bot_running=self._is_bot_active(self._last_status),
+            )
+            return src, new_res, models
+
+        def launch_ollama_work() -> tuple[str, list[CheckResult], list[str]]:
+            ok, msg = start_ollama()
+            if not ok:
+                raise RuntimeError(msg)
+            base_url = read_env_summary(self.manager.root_dir)["ollama_base_url"]
+            for _ in range(10):
+                time.sleep(0.5)
+                reachable, models, _ = fetch_ollama_models(base_url)
+                if reachable:
+                    self.root.after(0, lambda m=models: self._apply_models("ollama", True, m, ""))
+                    break
+            return recheck_work()
+
+        def on_done(result: object) -> None:
+            if isinstance(result, Exception):
+                if win.winfo_exists():
+                    for btn in action_buttons:
+                        btn.configure(state="normal")
+                    messagebox.showerror("Setup Check", str(result), parent=win)
+                return
+            src, new_res, models = result  # type: ignore[misc]
+            if src in LLM_SOURCES and models:
+                self._apply_models(src, True, models, "")
+            if win.winfo_exists():
+                render(new_res)
+
+        def run_action(work: Callable[[], object]) -> None:
+            for btn in action_buttons:
+                btn.configure(state="disabled")
+            _run_off_ui(self.root, work, on_done)
+
         def render(items: list[CheckResult]) -> None:
+            action_buttons.clear()
             for child in body.winfo_children():
                 child.destroy()
 
@@ -549,35 +639,10 @@ class PachinkoControlApp:
             btn_row = ttk.Frame(body)
             btn_row.pack(fill="x", pady=(10, 0))
 
-            def recheck() -> None:
-                src = self._selected_source()
-                new_res, models = run_preflight(
-                    self.manager.root_dir,
-                    selected_source=src,
-                    selected_model=self._selected_model(),
-                    bot_running=self._is_bot_active(self._last_status),
-                )
-                if src in LLM_SOURCES and models:
-                    self._apply_models(src, True, models, "")
-                render(new_res)
-
             if any((not r.ok) and r.code == "ollama_down" for r in items):
-                def launch_ollama() -> None:
-                    ok, msg = start_ollama()
-                    if not ok:
-                        messagebox.showerror("Start Ollama", msg, parent=win)
-                        return
-                    for _ in range(10):
-                        time.sleep(0.5)
-                        reachable, models, _ = fetch_ollama_models(
-                            read_env_summary(self.manager.root_dir)["ollama_base_url"]
-                        )
-                        if reachable:
-                            self._apply_models("ollama", True, models, "")
-                            break
-                    recheck()
-
-                ttk.Button(btn_row, text="Start Ollama", command=launch_ollama).pack(side="left", padx=(0, 6))
+                btn_ollama = ttk.Button(btn_row, text="Start Ollama", command=lambda: run_action(launch_ollama_work))
+                btn_ollama.pack(side="left", padx=(0, 6))
+                action_buttons.append(btn_ollama)
 
             eff_src, _ = effective_llm_selection(self.settings, read_env_summary(self.manager.root_dir))
             if eff_src == "ninerouter":
@@ -587,7 +652,9 @@ class PachinkoControlApp:
                     command=self.open_ninerouter_dashboard,
                 ).pack(side="left", padx=(0, 6))
 
-            ttk.Button(btn_row, text="Re-check", command=recheck).pack(side="left", padx=(0, 6))
+            btn_recheck = ttk.Button(btn_row, text="Re-check", command=lambda: run_action(recheck_work))
+            btn_recheck.pack(side="left", padx=(0, 6))
+            action_buttons.append(btn_recheck)
             if allow_start:
                 def start_anyway() -> None:
                     win.destroy()

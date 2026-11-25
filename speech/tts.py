@@ -74,6 +74,8 @@ def _safe_err(exc: Exception) -> str:
 
 
 def _is_elevenlabs_cooldown_error(exc: Exception) -> bool:
+    if isinstance(exc, subprocess.CalledProcessError):
+        return False  # bad audio, not a key/quota problem
     if isinstance(exc, _ElevenLabsError):
         return exc.cooldown
     status = getattr(getattr(exc, "response", None), "status_code", None)
@@ -170,9 +172,6 @@ class TTSEngine:
             return b"", ""
 
         order = self._provider_order()
-        wav_or_mp3: bytes = b""
-        fmt: str = "wav"
-        actual_provider: str = "piper"
 
         for idx, provider in enumerate(order):
             if provider == "elevenlabs":
@@ -186,13 +185,17 @@ class TTSEngine:
 
             try:
                 if provider == "piper":
-                    wav_or_mp3, fmt = await self._synth_piper(clean), "wav"
+                    audio, fmt = await self._synth_piper(clean), "wav"
                 elif provider == "elevenlabs":
-                    wav_or_mp3, fmt = await self._synth_elevenlabs(clean), "mp3"
+                    audio, fmt = await self._synth_elevenlabs(clean), "mp3"
                 else:
-                    wav_or_mp3, fmt = await self._synth_edge(clean, emotion=emotion), "mp3"
-                actual_provider = provider
-                break
+                    audio, fmt = await self._synth_edge(clean, emotion=emotion), "mp3"
+                if config.rvc_enabled:
+                    audio, fmt = await self._apply_rvc_if_available(audio, fmt)
+                pcm = await asyncio.to_thread(audio_bytes_to_pcm48k, audio, fmt)
+                if not pcm:
+                    raise RuntimeError("audio decoded to empty PCM")
+                return pcm, provider
             except Exception as e:
                 if idx == len(order) - 1:
                     raise
@@ -211,11 +214,7 @@ class TTSEngine:
                 else:
                     log.warning("TTS '%s' failed (%s), falling back to '%s'...", provider, _safe_err(e), next_prov)
 
-        if config.rvc_enabled:
-            wav_or_mp3, fmt = await self._apply_rvc_if_available(wav_or_mp3, fmt)
-
-        pcm = await asyncio.to_thread(audio_bytes_to_pcm48k, wav_or_mp3, fmt)
-        return pcm, actual_provider
+        raise RuntimeError("No TTS provider produced audio")
 
     async def get_filler_pcm(self, phrase: str) -> bytes:
         """Fetch (or generate once and cache on disk) a short 'Hmm?' filler clip with zero delay."""
@@ -286,6 +285,8 @@ class TTSEngine:
             summary = _elevenlabs_error_summary(r)
             cooldown = r.status_code in (401, 402, 429) or bool(_QUOTA_RE.search(summary))
             raise _ElevenLabsError(f"ElevenLabs {summary}", status_code=r.status_code, cooldown=cooldown)
+        if not r.content:
+            raise _ElevenLabsError("ElevenLabs returned empty audio", status_code=r.status_code, cooldown=False)
         return r.content
 
     async def _apply_rvc_if_available(self, audio_bytes: bytes, fmt: str) -> tuple[bytes, str]:

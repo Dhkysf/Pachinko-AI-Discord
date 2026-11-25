@@ -32,17 +32,12 @@ def _offer_setup(message: str) -> None:
         root.destroy()
 
 
-def _bootstrap() -> None:
-    if not VENV_PYTHONW.exists():
-        _offer_setup("Pachinko is not installed yet. Run setup now?")
-        sys.exit(0)
-
-    current = os.path.normcase(os.path.abspath(sys.executable))
-    target = os.path.normcase(os.path.abspath(str(VENV_PYTHONW)))
-    if current != target and os.environ.get(_BOOTSTRAPPED_ENV) != "1":
-        env = os.environ.copy()
-        env[_BOOTSTRAPPED_ENV] = "1"
-        subprocess.Popen(
+def _launch_venv() -> None:
+    """Re-run this launcher under .venv pythonw; offer setup if it dies right away."""
+    env = os.environ.copy()
+    env[_BOOTSTRAPPED_ENV] = "1"
+    try:
+        proc = subprocess.Popen(
             [str(VENV_PYTHONW), str(Path(__file__).resolve()), *sys.argv[1:]],
             cwd=str(ROOT),
             env=env,
@@ -51,6 +46,25 @@ def _bootstrap() -> None:
             stderr=subprocess.DEVNULL,
             creationflags=_CREATE_NO_WINDOW,
         )
+        code = proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        return  # still running: normal start
+    except OSError as exc:
+        _offer_setup(f"Pachinko could not start ({exc}). Repair with setup.bat?")
+        return
+    if code != 0:
+        _offer_setup(f"Pachinko could not start (exit code {code}). The .venv may be broken. Repair with setup.bat?")
+
+
+def _bootstrap() -> None:
+    if not VENV_PYTHONW.exists():
+        _offer_setup("Pachinko is not installed yet. Run setup now?")
+        sys.exit(0)
+
+    current = os.path.normcase(os.path.abspath(sys.executable))
+    target = os.path.normcase(os.path.abspath(str(VENV_PYTHONW)))
+    if current != target and os.environ.get(_BOOTSTRAPPED_ENV) != "1":
+        _launch_venv()
         sys.exit(0)
 
 

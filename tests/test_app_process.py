@@ -333,6 +333,55 @@ class TestAppProcessManager(unittest.TestCase):
                 self.assertNotIn("/", arg)
             self.assertNotIn(str(mod.ROOT), arg)
 
+    def test_launch_venv_offers_setup_only_on_early_nonzero_exit_or_oserror(self) -> None:
+        old_cwd = os.getcwd()
+        try:
+            with patch.dict(os.environ, {"PACHINKO_APP_BOOTSTRAPPED": "1"}):
+                loader = importlib.machinery.SourceFileLoader(
+                    "pachinko_launcher_test", str(self.repo_root / "Pachinko.pyw")
+                )
+                spec = importlib.util.spec_from_loader(loader.name, loader)
+                assert spec is not None
+                mod = importlib.util.module_from_spec(spec)
+                loader.exec_module(mod)
+        finally:
+            os.chdir(old_cwd)
+
+        fake = MagicMock()
+        fake.wait.return_value = 1
+        with (
+            patch.object(mod.subprocess, "Popen", return_value=fake) as mock_popen,
+            patch.object(mod, "_offer_setup") as offer,
+        ):
+            mod._launch_venv()
+            offer.assert_called_once()
+            self.assertEqual(mock_popen.call_args.kwargs["env"]["PACHINKO_APP_BOOTSTRAPPED"], "1")
+
+        fake_running = MagicMock()
+        fake_running.wait.side_effect = subprocess.TimeoutExpired("pythonw", 1.0)
+        with (
+            patch.object(mod.subprocess, "Popen", return_value=fake_running),
+            patch.object(mod, "_offer_setup") as offer,
+        ):
+            mod._launch_venv()
+            offer.assert_not_called()
+
+        fake_zero = MagicMock()
+        fake_zero.wait.return_value = 0
+        with (
+            patch.object(mod.subprocess, "Popen", return_value=fake_zero),
+            patch.object(mod, "_offer_setup") as offer,
+        ):
+            mod._launch_venv()
+            offer.assert_not_called()
+
+        with (
+            patch.object(mod.subprocess, "Popen", side_effect=OSError("bad exe")),
+            patch.object(mod, "_offer_setup") as offer,
+        ):
+            mod._launch_venv()
+            offer.assert_called_once()
+
     def test_spawn_removes_stale_status_and_poll_shows_starting(self) -> None:
         mgr = BotProcessManager(self.repo_root, data_dir=self.tmp_dir, bot_cmd=self._cmd("normal"))
         mgr.run_dir.mkdir(parents=True, exist_ok=True)

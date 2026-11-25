@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,12 @@ import httpx
 import speech.tts as tts_mod
 from config import AppConfig, config
 from speech.tts import TTSEngine
+
+
+def _fake_decode(data: bytes, fmt: str) -> bytes:
+    if data in (b"", b"GARBAGE"):
+        raise subprocess.CalledProcessError(1, ["ffmpeg"])
+    return b"PCM_" + data
 
 
 class _FakeClock:
@@ -277,6 +284,68 @@ class TestTTSFallbackAndCooldown(unittest.IsolatedAsyncioTestCase):
 
                     files = list(cache_dir.glob("*.pcm"))
                     self.assertEqual(len(files), 2)
+        finally:
+            await eng.close()
+
+    async def test_elevenlabs_empty_200_falls_back_to_edge_without_cooldown(self) -> None:
+        clock = _FakeClock(6000.0)
+        el_calls = 0
+
+        async def fake_post(url: str, **kwargs) -> httpx.Response:
+            nonlocal el_calls
+            el_calls += 1
+            return httpx.Response(200, content=b"")
+
+        eng = self._make_engine()
+        try:
+            with (
+                patch.object(config, "tts_provider", "elevenlabs"),
+                patch.object(config, "tts_fallback", ("edge", "piper")),
+                patch.object(config, "elevenlabs_api_key", "sk-test"),
+                patch.object(config, "elevenlabs_voice_id", "voice-1"),
+                patch.object(config, "rvc_enabled", False),
+                patch.object(eng._http, "post", side_effect=fake_post),
+                patch.object(eng, "_synth_edge", AsyncMock(return_value=b"EDGE_MP3")),
+                patch.object(tts_mod, "audio_bytes_to_pcm48k", side_effect=_fake_decode),
+                patch.object(tts_mod.time, "monotonic", side_effect=clock),
+            ):
+                pcm1 = await eng.synthesize_pcm("Satu")
+                self.assertEqual(pcm1, b"PCM_EDGE_MP3")
+                pcm2 = await eng.synthesize_pcm("Dua")
+                self.assertEqual(pcm2, b"PCM_EDGE_MP3")
+                self.assertEqual(el_calls, 2)
+                self.assertFalse(eng._el_cooldown_active)
+        finally:
+            await eng.close()
+
+    async def test_elevenlabs_undecodable_audio_falls_back_to_edge_without_cooldown(self) -> None:
+        clock = _FakeClock(7000.0)
+        el_calls = 0
+
+        async def fake_post(url: str, **kwargs) -> httpx.Response:
+            nonlocal el_calls
+            el_calls += 1
+            return httpx.Response(200, content=b"GARBAGE")
+
+        eng = self._make_engine()
+        try:
+            with (
+                patch.object(config, "tts_provider", "elevenlabs"),
+                patch.object(config, "tts_fallback", ("edge", "piper")),
+                patch.object(config, "elevenlabs_api_key", "sk-test"),
+                patch.object(config, "elevenlabs_voice_id", "voice-1"),
+                patch.object(config, "rvc_enabled", False),
+                patch.object(eng._http, "post", side_effect=fake_post),
+                patch.object(eng, "_synth_edge", AsyncMock(return_value=b"EDGE_MP3")),
+                patch.object(tts_mod, "audio_bytes_to_pcm48k", side_effect=_fake_decode),
+                patch.object(tts_mod.time, "monotonic", side_effect=clock),
+            ):
+                pcm1 = await eng.synthesize_pcm("Satu")
+                self.assertEqual(pcm1, b"PCM_EDGE_MP3")
+                pcm2 = await eng.synthesize_pcm("Dua")
+                self.assertEqual(pcm2, b"PCM_EDGE_MP3")
+                self.assertEqual(el_calls, 2)
+                self.assertFalse(eng._el_cooldown_active)
         finally:
             await eng.close()
 
