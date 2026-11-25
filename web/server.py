@@ -27,14 +27,6 @@ from sing.engine import SingingEngine
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
-def _active_llm_model() -> str:
-    if config.llm_provider == "openai_compat":
-        return config.openai_model
-    if config.llm_provider == "gemini":
-        return config.gemini_model
-    return config.ollama_model
-
-
 async def _json_dict(req: Request) -> dict[str, Any]:
     try:
         body = await req.json()
@@ -134,7 +126,7 @@ def create_web_app(
             },
             "runtime": {
                 "llm_provider": config.llm_provider,
-                "llm_model": _active_llm_model(),
+                "llm_model": config.active_model(),
                 "ollama_model": config.ollama_model,
                 "stt_provider": config.stt_provider,
                 "whisper_model": config.whisper_model,

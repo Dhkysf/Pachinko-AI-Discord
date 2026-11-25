@@ -68,22 +68,28 @@ class AppConfig:
         default_factory=lambda: Path(os.getenv("DB_PATH", "").strip() or str(DATA_DIR / "pachinko.db"))
     )
 
-    # --- LLM (Default: Local via Ollama on RX 9070 16GB, with optional Gemini/OpenAI) ---
-    # Options: "ollama" | "openai_compat" | "gemini"
-    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "ollama").lower())
-    ollama_base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"))
-    ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:8b"))
-    ollama_keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "15m"))
+    # --- LLM (Default: Local via Ollama on RX 9070 16GB, with optional 9router/Gemini/OpenAI) ---
+    # Options: "ollama" | "ninerouter" | "gemini" | "openai_compat"
+    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "ollama").strip().lower())
+    ollama_base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip())
+    ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:8b").strip())
+    ollama_keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "15m").strip())
     llm_temperature: float | None = field(default_factory=lambda: _opt_float("LLM_TEMPERATURE", 0.0, 2.0))
     llm_compact_prompt: bool = field(default_factory=lambda: _bool("LLM_COMPACT_PROMPT", True))
 
-    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1"))
-    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", "lm-studio"))
-    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "qwen3-8b"))
+    ninerouter_base_url: str = field(
+        default_factory=lambda: os.getenv("NINEROUTER_BASE_URL", "http://127.0.0.1:20128/v1").strip()
+    )
+    ninerouter_api_key: str = field(default_factory=lambda: os.getenv("NINEROUTER_API_KEY", "").strip())
+    ninerouter_model: str = field(default_factory=lambda: os.getenv("NINEROUTER_MODEL", "").strip())
+
+    openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1").strip())
+    openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", "lm-studio").strip())
+    openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "qwen3-8b").strip())
 
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", "").strip())
     # check the current model list at https://ai.google.dev/gemini-api/docs/models
-    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.8-flash"))
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip())
     gemini_fallback_models: tuple[str, ...] = field(
         default_factory=lambda: _csv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite")
     )
@@ -143,7 +149,20 @@ class AppConfig:
     gpu_vram_gb: int = field(default_factory=lambda: _int("GPU_VRAM_GB", 16))
     vram_offload_for_singing: bool = field(default_factory=lambda: _bool("VRAM_OFFLOAD_FOR_SINGING", True))
 
+    def active_model(self) -> str:
+        if self.llm_provider == "ninerouter":
+            return self.ninerouter_model
+        if self.llm_provider == "openai_compat":
+            return self.openai_model
+        if self.llm_provider == "gemini":
+            return self.gemini_model
+        return self.ollama_model
+
 
 config = AppConfig()
+
+
+def active_model() -> str:
+    return config.active_model()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)

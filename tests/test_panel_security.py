@@ -133,6 +133,7 @@ class TestPanelSecurity(unittest.TestCase):
             client = self._client(_make_app())
             for provider, expected in (
                 ("ollama", config.ollama_model),
+                ("ninerouter", config.ninerouter_model),
                 ("openai_compat", config.openai_model),
                 ("gemini", config.gemini_model),
             ):

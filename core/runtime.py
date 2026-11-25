@@ -170,6 +170,8 @@ def write_status(
     discord_ready: bool,
     voice_sessions: int,
     llm_ok: bool,
+    llm_provider: str = "",
+    llm_model: str = "",
     ollama_model: str = "",
 ) -> None:
     """Atomically write runtime status.json for the desktop control app."""
@@ -183,6 +185,8 @@ def write_status(
                 "discord_ready": bool(discord_ready),
                 "voice_sessions": int(voice_sessions),
                 "llm_ok": bool(llm_ok),
+                "llm_provider": llm_provider,
+                "llm_model": llm_model,
                 "ollama_model": ollama_model,
             },
         )

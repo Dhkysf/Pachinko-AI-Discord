@@ -58,6 +58,14 @@ Open https://discord.com/developers/applications → select your bot application
    - **Panel Auth (`.env`, optional):** If `PANEL_TOKEN` is set, open `http://127.0.0.1:7878/?token=<PANEL_TOKEN>` (the token is saved in `sessionStorage` and stripped from the URL).
    - **Configuration (`.env`):** Set `LLM_TEMPERATURE` (`0.0`–`2.0`; leave empty to use the model/Ollama Modelfile default).
 
+### LLM sources
+- **Ollama (`ollama`, default):** 100% local on your GPU (`OLLAMA_BASE_URL`, `OLLAMA_MODEL`).
+- **9router (`ninerouter`):** Local OpenAI-compatible gateway (`NINEROUTER_BASE_URL`, `NINEROUTER_API_KEY`, `NINEROUTER_MODEL` from `GET /v1/models`). Run 9router with `--host 127.0.0.1`.
+- **Gemini (`gemini`):** Google Gemini API (`GEMINI_API_KEY`, `GEMINI_MODEL`). Also used as automatic fallback when `GEMINI_API_KEY` is set and another provider fails.
+- **OpenAI-compatible (`openai_compat`):** LM Studio / llama.cpp / vLLM (`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`).
+- **Switching:** Set `LLM_PROVIDER` in `.env`, or override per run with process env vars (e.g. `LLM_PROVIDER=ninerouter`, `NINEROUTER_MODEL=<id>`) without editing `.env`.
+- **Privacy note:** With `ollama` (and local `openai_compat`), chat text stays on this PC. With `ninerouter` or `gemini`, chat text leaves this PC.
+
 ### Control App (`Pachinko.lnk` / `Pachinko.pyw`)
 - <!-- Screenshot placeholder: Pachinko Control window & system tray -->
 - **System tray & status:** Shows live bot state (`Stopped`, `Starting`, `Running`, `Stopping`, `Crashed`, `Already running`), uptime, Discord readiness, Ollama health, and voice session count. Closing with **X** minimizes to the tray when enabled, and tray notifications alert you if the bot crashes or Ollama goes down.

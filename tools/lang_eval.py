@@ -103,10 +103,18 @@ def _fake_tool_result(name: str, args: dict[str, Any]) -> str:
     return "OK"
 
 
-async def _run_eval(model: str, runs: int) -> Path:
-    config.llm_provider = "ollama"
-    config.ollama_model = model
-    config.gemini_api_key = ""  # Never silently fall back to cloud Gemini
+async def _run_eval(model: str, runs: int, provider: str = "ollama") -> Path:
+    config.llm_provider = provider
+    if provider == "ninerouter":
+        config.ninerouter_model = model
+    elif provider == "openai_compat":
+        config.openai_model = model
+    elif provider == "gemini":
+        config.gemini_model = model
+    else:
+        config.ollama_model = model
+    if provider != "gemini":
+        config.gemini_api_key = ""  # Never silently fall back to cloud Gemini
 
     profile = ProfileManager(None).current  # type: ignore[arg-type]
     fake_person = {
@@ -195,9 +203,10 @@ async def _run_eval(model: str, runs: int) -> Path:
     out_path = DATA_DIR / f"lang_eval_{safe_model}_{ts}.md"
 
     lines = [
-        f"# Language Eval: `{model}`",
+        f"# Language Eval: `{provider}/{model}`",
         "",
         f"- **Timestamp:** {ts}",
+        f"- **Provider:** {provider}",
         f"- **Runs:** {runs} ({total} replies)",
         f"- **LLM_COMPACT_PROMPT:** {getattr(config, 'llm_compact_prompt', False)}",
         f"- **LLM_TEMPERATURE:** {config.llm_temperature}",
@@ -241,11 +250,19 @@ async def _run_eval(model: str, runs: int) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate Pachinko Indonesian replies on local Ollama.")
-    parser.add_argument("--model", default=config.ollama_model, help="Ollama model name (default from .env)")
+    parser = argparse.ArgumentParser(description="Evaluate Pachinko Indonesian replies.")
+    parser.add_argument(
+        "--provider",
+        choices=("ollama", "ninerouter", "gemini", "openai_compat"),
+        default="ollama",
+        help="LLM provider (default: ollama)",
+    )
+    parser.add_argument("--model", default="", help="Model name (default: active model for --provider)")
     parser.add_argument("--runs", type=int, default=2, help="Number of runs per prompt (default: 2)")
     args = parser.parse_args()
-    asyncio.run(_run_eval(args.model, max(1, args.runs)))
+    config.llm_provider = args.provider
+    model = args.model or config.active_model()
+    asyncio.run(_run_eval(model, max(1, args.runs), provider=args.provider))
 
 
 if __name__ == "__main__":

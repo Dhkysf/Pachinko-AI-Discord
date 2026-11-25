@@ -144,6 +144,8 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
             discord_ready=False,
             voice_sessions=0,
             llm_ok=False,
+            llm_provider=config.llm_provider,
+            llm_model=config.active_model(),
             ollama_model=config.ollama_model,
         )
 
@@ -168,6 +170,7 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
 
         tools = ToolBox(memory, gate, song_enqueue_cb=singing.enqueue)
         llm = LLMClient()
+        log.info("Brain LLM: provider=%s model=%s", config.llm_provider, config.active_model() or "(unset)")
         triage = TriageEngine()
         brain = BrainRunner(
             store=store,
@@ -227,6 +230,8 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
                     discord_ready=discord_ready,
                     voice_sessions=voice_sessions,
                     llm_ok=llm_ok,
+                    llm_provider=config.llm_provider,
+                    llm_model=config.active_model(),
                     ollama_model=config.ollama_model,
                 )
                 await asyncio.sleep(10.0)
@@ -305,6 +310,8 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
                 discord_ready=bool(active_bot and getattr(active_bot, "is_ready", lambda: False)()),
                 voice_sessions=len(getattr(active_bot, "voice_sessions", None) or {}),
                 llm_ok=bool(llm and llm.last_ok),
+                llm_provider=config.llm_provider,
+                llm_model=config.active_model(),
                 ollama_model=config.ollama_model,
             )
         except Exception:
