@@ -24,7 +24,7 @@ def _offer_setup(message: str) -> None:
         if messagebox.askyesno("Pachinko Control", message):
             if SETUP_BAT.exists():
                 subprocess.Popen(
-                    ["cmd.exe", "/c", str(SETUP_BAT)],
+                    ["cmd.exe", "/c", "setup.bat"],
                     cwd=str(ROOT),
                     creationflags=_CREATE_NEW_CONSOLE,
                 )

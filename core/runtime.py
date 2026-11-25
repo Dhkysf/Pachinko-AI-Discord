@@ -21,6 +21,9 @@ EXIT_ALREADY_RUNNING = 3
 LOG_MAX_BYTES = 5 * 1024 * 1024
 LOG_BACKUP_COUNT = 3
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+LOCK_START_TOLERANCE_SEC = 10.0
+_WIN_EPOCH_TICKS = 116_444_736_000_000_000
+_KERNEL32: Any = None
 
 log = logging.getLogger("pachinko.runtime")
 
@@ -81,59 +84,121 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def is_python_process(pid: int) -> bool:
-    """Return True if pid is a live Python process."""
-    if pid <= 0:
-        return False
-    if pid == os.getpid():
-        return True
-
+def _process_info(pid: int) -> tuple[bool, float | None]:
+    """Return (is_live_python, creation_unix_ts_or_none) for pid."""
     if sys.platform == "win32":
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        global _KERNEL32
+        from ctypes import wintypes
+
+        if _KERNEL32 is None:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            k32.GetExitCodeProcess.restype = wintypes.BOOL
+            k32.QueryFullProcessImageNameW.argtypes = [
+                wintypes.HANDLE,
+                wintypes.DWORD,
+                wintypes.LPWSTR,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+            ft_ptr = ctypes.POINTER(wintypes.FILETIME)
+            k32.GetProcessTimes.argtypes = [wintypes.HANDLE, ft_ptr, ft_ptr, ft_ptr, ft_ptr]
+            k32.GetProcessTimes.restype = wintypes.BOOL
+            k32.CloseHandle.argtypes = [wintypes.HANDLE]
+            k32.CloseHandle.restype = wintypes.BOOL
+            _KERNEL32 = k32
+        k32 = _KERNEL32
+        handle = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
-            return False
+            return False, None
         try:
-            code = ctypes.c_uint32(0)
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return False
-            if code.value != 259:  # STILL_ACTIVE
-                return False
+            code = wintypes.DWORD(0)
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:
+                return False, None
             buf = ctypes.create_unicode_buffer(1024)
-            size = ctypes.c_uint32(len(buf))
-            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
-                return Path(buf.value).name.lower().startswith("python")
-            return False
+            size = wintypes.DWORD(len(buf))
+            if not k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return False, None
+            if not Path(buf.value).name.lower().startswith("python"):
+                return False, None
+            creation = wintypes.FILETIME()
+            exit_t = wintypes.FILETIME()
+            kernel_t = wintypes.FILETIME()
+            user_t = wintypes.FILETIME()
+            if k32.GetProcessTimes(
+                handle, ctypes.byref(creation), ctypes.byref(exit_t), ctypes.byref(kernel_t), ctypes.byref(user_t)
+            ):
+                ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+                if ticks > 0:
+                    return True, (ticks - _WIN_EPOCH_TICKS) / 10_000_000.0
+            return True, None
         finally:
-            kernel32.CloseHandle(handle)
+            k32.CloseHandle(handle)
 
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False
+        return False, None
     except PermissionError:
-        return True
+        return True, None
     comm = Path(f"/proc/{pid}/comm")
     if comm.exists():
         try:
-            return "python" in comm.read_text(encoding="utf-8", errors="ignore").lower()
+            return "python" in comm.read_text(encoding="utf-8", errors="ignore").lower(), None
         except OSError:
-            return True
+            return True, None
+    return True, None
+
+
+def is_python_process(pid: int, started: int | float | None = None) -> bool:
+    """Return True if pid is a live Python process (and matches started within 10s when known)."""
+    if isinstance(pid, bool) or pid <= 0:
+        return False
+    if pid == os.getpid() and started is None:
+        return True
+    is_py, proc_started = _process_info(pid)
+    if not is_py:
+        return False
+    if started is not None and not isinstance(started, bool) and proc_started is not None:
+        if abs(proc_started - float(started)) > LOCK_START_TOLERANCE_SEC:
+            return False
     return True
+
+
+def check_python_pid(fn: Callable[..., bool], pid: int, started: Any = None) -> bool:
+    """Invoke a 1-arg or 2-arg (pid, started) process-check callback safely."""
+    started_val = started if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+    if fn is is_python_process:
+        return is_python_process(pid, started_val)
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return bool(fn(pid))
+    accepts_two = sum(
+        1 for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ) >= 2 or any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+    return bool(fn(pid, started_val)) if accepts_two else bool(fn(pid))
 
 
 def acquire_lock(
     lock_path: Path,
     *,
     started: int | None = None,
-    is_python_pid: Callable[[int], bool] = is_python_process,
+    is_python_pid: Callable[..., bool] = is_python_process,
 ) -> tuple[bool, int | None]:
     """Acquire single-instance lock; return (True, None) or (False, existing_pid)."""
     if lock_path.exists():
         try:
             data = json.loads(lock_path.read_text(encoding="utf-8"))
             existing_pid = data.get("pid") if isinstance(data, dict) else None
-            if isinstance(existing_pid, int) and is_python_pid(existing_pid):
+            existing_started = data.get("started") if isinstance(data, dict) else None
+            if (
+                isinstance(existing_pid, int)
+                and not isinstance(existing_pid, bool)
+                and check_python_pid(is_python_pid, existing_pid, existing_started)
+            ):
                 return False, existing_pid
         except (OSError, ValueError, TypeError):
             pass

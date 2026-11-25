@@ -5,8 +5,10 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -68,6 +70,32 @@ class TestRuntimeFiles(unittest.TestCase):
         self.assertTrue(is_python_process(os.getpid()))
         self.assertFalse(is_python_process(0))
         self.assertFalse(is_python_process(99999999))
+
+    def test_is_python_process_start_time_checks_and_fallback(self) -> None:
+        with patch("core.runtime._process_info", return_value=(True, 1005.0)):
+            self.assertTrue(is_python_process(12345, started=1000))
+        with patch("core.runtime._process_info", return_value=(True, 4600.0)):
+            self.assertFalse(is_python_process(12345, started=1000))
+        with patch("core.runtime._process_info", return_value=(True, None)):
+            self.assertTrue(is_python_process(12345, started=1000))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / "bot.lock"
+            lock_path.write_text(json.dumps({"pid": 12345, "started": 1000}), encoding="utf-8")
+            with patch("core.runtime._process_info", return_value=(True, 4600.0)):
+                ok, existing = acquire_lock(lock_path, started=4600)
+                self.assertTrue(ok)
+                self.assertIsNone(existing)
+                self.assertEqual(json.loads(lock_path.read_text(encoding="utf-8"))["pid"], os.getpid())
+
+            lock_path.write_text(json.dumps({"pid": 12345, "started": 1000}), encoding="utf-8")
+            with patch("core.runtime._process_info", return_value=(True, None)):
+                ok2, existing2 = acquire_lock(lock_path, started=4600)
+                self.assertFalse(ok2)
+                self.assertEqual(existing2, 12345)
+
+        if sys.platform == "win32":
+            self.assertFalse(is_python_process(os.getpid(), started=int(time.time()) - 3600))
 
     def test_status_atomic_rapid_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

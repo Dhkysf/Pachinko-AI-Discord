@@ -1,19 +1,24 @@
 """Offline unit tests for app/process.py using a fake bot subprocess."""
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from app.process import (
     STATE_ALREADY_RUNNING,
     STATE_CRASHED,
     STATE_RUNNING,
+    STATE_STARTING,
     STATE_STOPPED,
     BotProcessManager,
     format_uptime,
@@ -128,6 +133,7 @@ class TestAppProcessManager(unittest.TestCase):
             self.assertTrue(mgr.force_stop())
             st = mgr.poll()
             self.assertEqual(st.state, STATE_STOPPED)
+            self.assertFalse(mgr.lock_path.exists())
         finally:
             mgr.force_stop()
 
@@ -276,6 +282,174 @@ class TestAppProcessManager(unittest.TestCase):
             st_bad_json = mgr.poll()
         self.assertEqual(st_bad_json.state, STATE_RUNNING)
         self.assertTrue(st_bad_json.discord_ready)
+
+    def test_setup_launch_args_have_no_full_path(self) -> None:
+        from app.ui import PachinkoControlApp
+
+        rd_dir = self.tmp_dir / "R&D"
+        rd_dir.mkdir(parents=True, exist_ok=True)
+        (rd_dir / "setup.bat").write_text("@echo off\n", encoding="utf-8")
+
+        fake_app = SimpleNamespace(manager=SimpleNamespace(root_dir=rd_dir))
+        with patch("app.ui.subprocess.Popen") as mock_popen:
+            PachinkoControlApp.repair_install(fake_app)
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args[0][0]
+        self.assertEqual(args, ["cmd.exe", "/c", "setup.bat"])
+        self.assertEqual(mock_popen.call_args.kwargs.get("cwd"), str(rd_dir))
+        for arg in args:
+            self.assertNotIn(os.sep, arg)
+            if arg != "/c":
+                self.assertNotIn("/", arg)
+            self.assertNotIn("R&D", arg)
+
+        old_cwd = os.getcwd()
+        try:
+            with patch.dict(os.environ, {"PACHINKO_APP_BOOTSTRAPPED": "1"}):
+                loader = importlib.machinery.SourceFileLoader(
+                    "pachinko_launcher_test", str(self.repo_root / "Pachinko.pyw")
+                )
+                spec = importlib.util.spec_from_loader(loader.name, loader)
+                assert spec is not None
+                mod = importlib.util.module_from_spec(spec)
+                loader.exec_module(mod)
+        finally:
+            os.chdir(old_cwd)
+
+        with (
+            patch("tkinter.Tk"),
+            patch("tkinter.messagebox.askyesno", return_value=True),
+            patch.object(mod.subprocess, "Popen") as mock_pyw_popen,
+            patch.object(mod, "SETUP_BAT", rd_dir / "setup.bat"),
+        ):
+            mod._offer_setup("Run setup?")
+        mock_pyw_popen.assert_called_once()
+        pyw_args = mock_pyw_popen.call_args[0][0]
+        self.assertEqual(pyw_args, ["cmd.exe", "/c", "setup.bat"])
+        self.assertEqual(mock_pyw_popen.call_args.kwargs.get("cwd"), str(mod.ROOT))
+        for arg in pyw_args:
+            self.assertNotIn(os.sep, arg)
+            if arg != "/c":
+                self.assertNotIn("/", arg)
+            self.assertNotIn(str(mod.ROOT), arg)
+
+    def test_spawn_removes_stale_status_and_poll_shows_starting(self) -> None:
+        mgr = BotProcessManager(self.repo_root, data_dir=self.tmp_dir, bot_cmd=self._cmd("normal"))
+        mgr.run_dir.mkdir(parents=True, exist_ok=True)
+        mgr.status_path.write_text(
+            json.dumps(
+                {
+                    "state": "running",
+                    "pid": 99999,
+                    "started": int(time.time()) - 3600,
+                    "discord_ready": True,
+                    "llm_ok": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        fake_proc = MagicMock()
+        fake_proc.poll.return_value = None
+        fake_proc.pid = 11111
+        with patch("app.process.subprocess.Popen", return_value=fake_proc):
+            self.assertTrue(mgr.start())
+        self.assertFalse(mgr.status_path.exists())
+        st = mgr.poll()
+        self.assertEqual(st.state, STATE_STARTING)
+        self.assertFalse(st.discord_ready)
+        self.assertEqual(st.uptime, 0)
+
+    def test_force_stop_removes_dead_lock_when_launcher_pid_differs(self) -> None:
+        alive_pids = {18344, 26168}
+
+        def fake_is_python(pid: int, _started=None) -> bool:
+            return pid in alive_pids
+
+        mgr = BotProcessManager(
+            self.repo_root,
+            data_dir=self.tmp_dir,
+            bot_cmd=self._cmd("normal"),
+            is_python_pid=fake_is_python,
+        )
+        mgr.run_dir.mkdir(parents=True, exist_ok=True)
+        mgr.lock_path.write_text(json.dumps({"pid": 26168, "started": 1000}), encoding="utf-8")
+
+        killed = False
+
+        def on_kill(*_args, **_kwargs) -> None:
+            nonlocal killed
+            killed = True
+            alive_pids.discard(18344)
+            alive_pids.discard(26168)
+
+        fake_proc = MagicMock()
+        fake_proc.pid = 18344
+        fake_proc.poll.side_effect = lambda: 1 if killed else None
+        mgr._proc = fake_proc
+
+        with (
+            patch("app.process.subprocess.run", side_effect=on_kill) as mock_run,
+            patch("app.process.os.kill", side_effect=on_kill),
+        ):
+            self.assertTrue(mgr.force_stop())
+        if sys.platform == "win32":
+            mock_run.assert_called_once()
+            self.assertEqual(mock_run.call_args[0][0], ["taskkill", "/PID", "18344", "/T", "/F"])
+        self.assertFalse(mgr.lock_path.exists())
+
+        # Opposite: if child lock_pid stays alive after kill, lock_path must remain.
+        alive_pids = {18344, 26168}
+        killed = False
+        mgr.lock_path.write_text(json.dumps({"pid": 26168, "started": 1000}), encoding="utf-8")
+        fake_proc2 = MagicMock()
+        fake_proc2.pid = 18344
+        fake_proc2.poll.side_effect = lambda: 1 if killed else None
+        mgr._proc = fake_proc2
+
+        def on_kill_launcher_only(*_args, **_kwargs) -> None:
+            nonlocal killed
+            killed = True
+            alive_pids.discard(18344)
+
+        with (
+            patch("app.process.subprocess.run", side_effect=on_kill_launcher_only),
+            patch("app.process.os.kill", side_effect=on_kill_launcher_only),
+        ):
+            self.assertTrue(mgr.force_stop())
+        self.assertTrue(mgr.lock_path.exists())
+
+    def test_force_stop_refuses_mismatched_start_time_and_allows_unreadable(self) -> None:
+        mgr = BotProcessManager(self.repo_root, data_dir=self.tmp_dir, bot_cmd=self._cmd("normal"))
+        mgr.run_dir.mkdir(parents=True, exist_ok=True)
+        mgr.lock_path.write_text(json.dumps({"pid": 55555, "started": 1000}), encoding="utf-8")
+
+        with (
+            patch("core.runtime._process_info", return_value=(True, 4600.0)),
+            patch("app.process.subprocess.run") as mock_run,
+            patch("app.process.os.kill") as mock_kill,
+        ):
+            self.assertEqual(mgr.poll().state, STATE_STOPPED)
+            mgr.force_stop()
+            mock_run.assert_not_called()
+            mock_kill.assert_not_called()
+            self.assertFalse(mgr.force_stop(pid=55555))
+            mock_run.assert_not_called()
+            mock_kill.assert_not_called()
+
+        with (
+            patch("core.runtime._process_info", return_value=(True, None)),
+            patch("app.process.subprocess.run") as mock_run,
+            patch("app.process.os.kill") as mock_kill,
+        ):
+            st = mgr.poll()
+            self.assertTrue(st.external)
+            self.assertEqual(st.pid, 55555)
+            mgr.force_stop()
+            if sys.platform == "win32":
+                mock_run.assert_called_once()
+                self.assertEqual(mock_run.call_args[0][0], ["taskkill", "/PID", "55555", "/T", "/F"])
+            else:
+                mock_kill.assert_called_once()
 
 
 if __name__ == "__main__":

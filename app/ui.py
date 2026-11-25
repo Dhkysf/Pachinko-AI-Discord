@@ -701,7 +701,7 @@ class PachinkoControlApp:
     def repair_install(self) -> None:
         bat = self.manager.root_dir / "setup.bat"
         if bat.exists():
-            subprocess.Popen(["cmd.exe", "/c", str(bat)], cwd=str(self.manager.root_dir), creationflags=_CREATE_NEW_CONSOLE)
+            subprocess.Popen(["cmd.exe", "/c", "setup.bat"], cwd=str(self.manager.root_dir), creationflags=_CREATE_NEW_CONSOLE)
 
     def edit_settings(self) -> None:
         env_path = self.manager.root_dir / ".env"

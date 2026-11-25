@@ -18,6 +18,7 @@ from core.runtime import (
     EXIT_ALREADY_RUNNING,
     EXIT_OK,
     atomic_write_json,
+    check_python_pid,
     is_python_process,
 )
 
@@ -287,7 +288,7 @@ class BotProcessManager:
         llm_model: str = "",
         max_restarts: int = 3,
         restart_window_sec: float = 600.0,
-        is_python_pid: Callable[[int], bool] = is_python_process,
+        is_python_pid: Callable[..., bool] = is_python_process,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.root_dir = Path(root_dir)
@@ -338,13 +339,15 @@ class BotProcessManager:
             return None, None
         pid = data.get("pid")
         started = data.get("started")
-        if isinstance(pid, int) and self._is_python_pid(pid):
-            return pid, started if isinstance(started, int) else None
+        started_val = started if isinstance(started, (int, float)) and not isinstance(started, bool) else None
+        if isinstance(pid, int) and not isinstance(pid, bool) and check_python_pid(self._is_python_pid, pid, started_val):
+            return pid, int(started_val) if started_val is not None else None
         return None, None
 
     def _spawn(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.stop_path.unlink(missing_ok=True)
+        self.status_path.unlink(missing_ok=True)
         self._stopping = False
         self._stop_requested = False
         self._last_status = None
@@ -380,7 +383,7 @@ class BotProcessManager:
         """Request a clean stop via stop.request and wait up to timeout seconds."""
         with self._lock:
             proc = self._proc if (self._proc is not None and self._proc.poll() is None) else None
-            ext_pid, _ = self._read_live_lock_pid() if proc is None else (None, None)
+            ext_pid, ext_started = self._read_live_lock_pid() if proc is None else (None, None)
             if proc is None and ext_pid is None:
                 self._stopping = False
                 return True
@@ -395,7 +398,7 @@ class BotProcessManager:
                 if proc.poll() is not None:
                     return True
             else:
-                if not self._is_python_pid(ext_pid):  # type: ignore[arg-type]
+                if not check_python_pid(self._is_python_pid, ext_pid, ext_started):  # type: ignore[arg-type]
                     return True
             if self._clock() >= deadline:
                 return False
@@ -412,11 +415,22 @@ class BotProcessManager:
         with self._lock:
             proc = self._proc
             target_pid = pid
+            target_started: int | None = None
             if target_pid is None:
                 if proc is not None and proc.poll() is None:
                     target_pid = proc.pid
                 else:
-                    target_pid, _ = self._read_live_lock_pid()
+                    target_pid, target_started = self._read_live_lock_pid()
+            elif proc is None or proc.poll() is not None or target_pid != proc.pid:
+                lock_data = self._read_json(self.lock_path)
+                if lock_data and lock_data.get("pid") == target_pid:
+                    raw_started = lock_data.get("started")
+                    if isinstance(raw_started, (int, float)) and not isinstance(raw_started, bool):
+                        target_started = int(raw_started)
+                if not check_python_pid(self._is_python_pid, target_pid, target_started):
+                    self._stopping = False
+                    self._stop_requested = True
+                    return False
 
             self._stopping = False
             self._stop_requested = True
@@ -453,7 +467,7 @@ class BotProcessManager:
         with self._lock:
             still_alive = (
                 (proc is not None and proc.poll() is None)
-                or self._is_python_pid(target_pid)
+                or check_python_pid(self._is_python_pid, target_pid, target_started)
             )
             if not still_alive:
                 self._proc = None
@@ -462,8 +476,8 @@ class BotProcessManager:
                 self._last_status = None
                 self.stop_path.unlink(missing_ok=True)
                 self.status_path.unlink(missing_ok=True)
-                lock_data = self._read_json(self.lock_path)
-                if lock_data and lock_data.get("pid") == target_pid:
+                lock_pid, _ = self._read_live_lock_pid()
+                if lock_pid is None:
                     self.lock_path.unlink(missing_ok=True)
                 return True
             return False
