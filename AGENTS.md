@@ -21,7 +21,10 @@
 - Keep changes small and on task; prefer deleting code to adding layers. Long-lived shortcuts get a `shortcut:` comment naming the limit.
 
 ## Code navigation
-- Use the **codegraph** MCP tools (list them first) to find callers/callees and impact before editing; read only the parts you need. If the index looks stale (files missing), tell me to run `codegraph init`.
+- Call `codegraph_explore` FIRST before opening any files.
+- After that, read only the relevant line ranges (the functions/classes involved), not the entire file. Read the entire file only if you’re going to modify most of its contents.
+- To follow the test pattern, read only one sample test file, not all test files.
+- Do not re-read files whose contents are already in this conversation, unless the file has just been modified.
 
 ## Run & check (Windows, PowerShell, project root)
 - Python: always `.venv\Scripts\python.exe`. The sandbox warning "Failed to find real location of ...python.exe" is harmless; output is still valid.
