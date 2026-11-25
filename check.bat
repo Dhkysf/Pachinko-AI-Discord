@@ -22,5 +22,5 @@ if %FAILED%==0 (
 ) else (
     echo FAIL
 )
-pause
+if /i not "%~1"=="nopause" pause
 exit /b %FAILED%

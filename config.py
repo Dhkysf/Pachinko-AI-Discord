@@ -83,6 +83,15 @@ class AppConfig:
     ninerouter_api_key: str = field(default_factory=lambda: os.getenv("NINEROUTER_API_KEY", "").strip())
     ninerouter_model: str = field(default_factory=lambda: os.getenv("NINEROUTER_MODEL", "").strip())
 
+    # --- Web Search ---
+    # Options: "ddgs" | "ninerouter"
+    web_search_provider: str = field(
+        default_factory=lambda: os.getenv("WEB_SEARCH_PROVIDER", "ddgs").strip().lower()
+    )
+    web_search_ninerouter_provider: str = field(
+        default_factory=lambda: os.getenv("WEB_SEARCH_NINEROUTER_PROVIDER", "").strip()
+    )
+
     openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1").strip())
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", "lm-studio").strip())
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "qwen3-8b").strip())

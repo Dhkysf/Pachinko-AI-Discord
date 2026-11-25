@@ -10,7 +10,7 @@ A pure-Python Discord voice & chat companion bot (inspired by the architecture o
    - One unified mind for **Voice** & **Text Chat** (replies in casual Indonesian).
    - Per-channel autonomy modes (`/mode`): `off`, `mention-only`, `quiet` (2x/hr), `normal` (6x/hr), `lively` (14x/hr).
    - Quoted `<data>` prompt-injection defense (`core/safety.py`) + **Action Gate** (`brain/gate.py`).
-   - Built-in tools: Web Search (`ddgs`), Living Notebook, Timed Reminders, & Song Queue.
+   - Built-in tools: Web Search (`ddgs` or optional 9router `/v1/search`), Living Notebook, Timed Reminders, & Song Queue.
 
 2. **Heart Engine & 9-Axis Relationship (`heart/`)**
    - Simulates **12 emotions** with half-life decay, valence, arousal, & energy.
@@ -65,6 +65,12 @@ Open https://discord.com/developers/applications → select your bot application
 - **OpenAI-compatible (`openai_compat`):** LM Studio / llama.cpp / vLLM (`OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`).
 - **Switching:** Set `LLM_PROVIDER` in `.env`, or override per run with process env vars (e.g. `LLM_PROVIDER=ninerouter`, `NINEROUTER_MODEL=<id>`) without editing `.env`.
 - **Privacy note:** With `ollama` (and local `openai_compat`), chat text stays on this PC. With `ninerouter` or `gemini`, chat text leaves this PC.
+
+### Web search
+- **Default (`ddgs`):** Free DuckDuckGo search (`WEB_SEARCH_PROVIDER=ddgs`).
+- **9router (`ninerouter`):** Optional Google-backed search via 9router's `/v1/search` endpoint (reuses `NINEROUTER_BASE_URL` and `NINEROUTER_API_KEY`). Connect Serper or Google PSE in the 9router dashboard, then set `WEB_SEARCH_PROVIDER=ninerouter` and `WEB_SEARCH_NINEROUTER_PROVIDER=serper` (or your configured provider ID). On any 9router error or empty result, `web_search` logs a warning and falls back to `ddgs` for that query.
+- **Privacy note:** Search queries leave this PC.
+- **Out of scope:** Control App UI for this setting, and full web page fetching.
 
 ### Control App (`Pachinko.lnk` / `Pachinko.pyw`)
 - <!-- Screenshot placeholder: Pachinko Control window & system tray -->

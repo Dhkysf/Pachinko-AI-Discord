@@ -9,8 +9,11 @@ import re
 import time
 from typing import Any, Callable, Awaitable
 
+import httpx
+
 from brain.gate import ActionGate
-from core.safety import data_block
+from config import config
+from core.safety import data_block, redact_secrets
 from memory.manager import MemoryManager
 
 log = logging.getLogger("brain.tools")
@@ -108,10 +111,13 @@ class ToolBox:
         memory: MemoryManager,
         gate: ActionGate,
         song_enqueue_cb: Callable[[str, str, str, str], Awaitable[str]] | None = None,
+        *,
+        http_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.memory = memory
         self.gate = gate
         self.song_enqueue_cb = song_enqueue_cb
+        self._http_transport = http_transport
 
     async def execute(
         self,
@@ -180,20 +186,97 @@ class ToolBox:
 
         return f"Unknown tool '{name}'."
 
+    async def _ninerouter_search(self, query: str) -> list[str] | None:
+        url = config.ninerouter_base_url.rstrip("/") + "/search"
+        headers = (
+            {"Authorization": f"Bearer {config.ninerouter_api_key}"}
+            if config.ninerouter_api_key
+            else {}
+        )
+        payload: dict[str, Any] = {
+            "query": query,
+            "max_results": 4,
+            "country": "id",
+            "language": "id",
+        }
+        if config.web_search_ninerouter_provider:
+            payload["provider"] = config.web_search_ninerouter_provider
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0, transport=self._http_transport) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+        except httpx.HTTPError as e:
+            log.warning("9router web_search failed (%s); falling back to ddgs.", redact_secrets(str(e))[:160])
+            return None
+
+        if resp.status_code != 200:
+            detail = resp.reason_phrase or "error"
+            try:
+                err_body = resp.json()
+                if isinstance(err_body, dict):
+                    err = err_body.get("error")
+                    if isinstance(err, dict) and err.get("message"):
+                        detail = str(err["message"])
+                    elif isinstance(err, str) and err:
+                        detail = err
+            except Exception:
+                pass
+            log.warning(
+                "9router web_search HTTP %s (%s); falling back to ddgs.",
+                resp.status_code,
+                redact_secrets(detail)[:160],
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            log.warning("9router web_search returned invalid JSON; falling back to ddgs.")
+            return None
+
+        results = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(results, list):
+            log.warning("9router web_search returned no results list; falling back to ddgs.")
+            return None
+
+        lines: list[str] = []
+        for it in results:
+            if not isinstance(it, dict):
+                continue
+            title = str(it.get("title") or "").strip()
+            snippet = str(it.get("snippet") or it.get("content") or it.get("body") or "").strip()
+            href = str(it.get("url") or it.get("link") or it.get("href") or "").strip()
+            if not (title or snippet or href):
+                continue
+            lines.append(f"- {title}: {snippet} ({href})")
+            if len(lines) >= 4:
+                break
+
+        if not lines:
+            log.warning("9router web_search returned no results; falling back to ddgs.")
+            return None
+        return lines
+
     async def _web_search(self, query: str) -> str:
         if not query.strip():
             return "Empty query."
 
-        def _search_sync() -> list[dict[str, Any]]:
-            from ddgs import DDGS
-            with DDGS() as ddgs:
-                return list(ddgs.text(query, max_results=4))
+        if config.web_search_provider == "ninerouter":
+            lines = await self._ninerouter_search(query)
+            if lines:
+                return data_block("web_search", "\n".join(lines), title=query, max_chars=3500)
 
         try:
-            items = await asyncio.to_thread(_search_sync)
+            items = await asyncio.to_thread(_ddgs_search, query)
         except Exception as e:
             return f"Search failed: {e}"
         if not items:
             return "No results found."
         lines = [f"- {it.get('title', '')}: {it.get('body', '')} ({it.get('href', '')})" for it in items]
         return data_block("web_search", "\n".join(lines), title=query, max_chars=3500)
+
+
+def _ddgs_search(query: str) -> list[dict[str, Any]]:
+    from ddgs import DDGS
+    with DDGS() as ddgs:
+        return list(ddgs.text(query, max_results=4))

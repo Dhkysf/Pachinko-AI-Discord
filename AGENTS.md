@@ -26,7 +26,7 @@
 ## Run & check (Windows, PowerShell, project root)
 - Python: always `.venv\Scripts\python.exe`. The sandbox warning "Failed to find real location of ...python.exe" is harmless; output is still valid.
 - One command per call: no `;`, `&&` or `Write-Host` chaining (chained commands break the permission sandbox).
-- Checks: `check.bat` (compileall + all tests), or `.venv\Scripts\python.exe -m unittest discover tests`. Tests are stdlib `unittest`, offline, no Discord, no Ollama, no real keys; use fakes and temp DBs.
+- Checks: agents must run `.\check.bat nopause` (never plain `check.bat`), or `.venv\Scripts\python.exe -m unittest discover tests`. Tests are stdlib `unittest`, offline, no Discord, no Ollama, no real keys; use fakes and temp DBs.
 - Bug fixes: add a test that FAILS on the old code first, then fix.
 - Prompt/persona/model changes: run `.venv\Scripts\python.exe tools\lang_eval.py --model <name> --runs 3` before and after and report leaks, wrong pronouns, English sentences, tool calls and time.
 - Smoke run when startup code changes: `.venv\Scripts\python.exe main.py` for ~20 s, then Ctrl+C; show a clean start and shutdown.
