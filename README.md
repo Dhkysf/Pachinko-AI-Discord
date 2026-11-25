@@ -79,7 +79,10 @@ Open https://discord.com/developers/applications → select your bot application
 - **Out of scope:** Control App UI for TTS settings, and RVC.
 
 ### Control App (`Pachinko.lnk` / `Pachinko.pyw`)
-<img width="758" height="650" alt="image" src="https://github.com/user-attachments/assets/701dec4b-587e-43f1-b21c-fb7bb79dec31" />
+
+<p align="center">
+  <img width="500" alt="Pachinko Control" src="https://github.com/user-attachments/assets/701dec4b-587e-43f1-b21c-fb7bb79dec31" />
+</p>
 
 - **System tray & status:** Shows live bot state (`Stopped`, `Starting`, `Running`, `Stopping`, `Crashed`, `Already running`), uptime, Discord readiness, active LLM provider health (9router / Ollama / OpenAI-compatible), and voice session count. Closing with **X** minimizes to the tray when enabled, and tray notifications alert you if the bot crashes or the active LLM provider's health turns to error.
 - **Pre-flight & LLM picker:** **Check setup** (also run before **Start bot**) checks `.env` + `DISCORD_TOKEN` presence, `ffmpeg` on `PATH`, the selected LLM source (9router or Ollama, plus optional Ollama fallback status when 9router is selected), and `PANEL_PORT`. The **LLM source** and **Model** dropdowns let you switch between `(use .env)`, 9router, and Ollama (saved per source in `data/app_settings.json`, passed via process env vars without touching `.env`).
