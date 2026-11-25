@@ -314,7 +314,6 @@ class BotProcessManager:
         self._proc: subprocess.Popen[bytes] | None = None
         self._stopping = False
         self._stop_requested = False
-        self._last_status = None
         self._terminal_state = STATE_STOPPED
         self._last_exit_code: int | None = None
         self._last_status: BotStatus | None = None

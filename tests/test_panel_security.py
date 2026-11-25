@@ -225,6 +225,21 @@ class TestPanelSecurity(unittest.TestCase):
         )
         self.assertEqual(client.post("/api/memory/delete", json=valid).status_code, 200)
 
+    def test_runtime_tts_provider_validation(self):
+        config.panel_token = ""
+        client = self._client(_make_app())
+        orig = config.tts_provider
+        try:
+            res_bad = client.post("/api/runtime", json={"tts_provider": "foo"})
+            self.assertEqual(res_bad.status_code, 400)
+            self.assertEqual(config.tts_provider, orig)
+
+            res_ok = client.post("/api/runtime", json={"tts_provider": "Piper"})
+            self.assertEqual(res_ok.status_code, 200)
+            self.assertEqual(config.tts_provider, "piper")
+        finally:
+            config.tts_provider = orig
+
 
 if __name__ == "__main__":
     unittest.main()

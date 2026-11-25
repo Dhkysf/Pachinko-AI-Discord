@@ -1,6 +1,7 @@
 """Offline unit tests for 9router, per-run env overrides, tool support, Ollama fallback, and health checks."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -688,6 +689,49 @@ class TestErrorsAndFallback(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res.tool_calls, [LLMToolCall(name="web_search", arguments={"query": "cuaca"})])
             self.assertEqual(res.finish_reason, "tool_calls")
             self.assertEqual(ollama_calls, 0)
+        finally:
+            await client.close()
+
+    async def test_concurrent_503_enters_cooldown_once_and_both_use_ollama(self) -> None:
+        nr_calls = 0
+        ollama_calls = 0
+        both_in_flight = asyncio.Event()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal nr_calls, ollama_calls
+            if str(request.url).startswith("http://127.0.0.1:20128/"):
+                nr_calls += 1
+                if nr_calls == 2:
+                    both_in_flight.set()
+                await asyncio.wait_for(both_in_flight.wait(), timeout=2.0)
+                return httpx.Response(503, text="unavailable")
+            ollama_calls += 1
+            return httpx.Response(200, json={"message": {"content": "from-ollama"}})
+
+        client = LLMClient(clock=lambda: 1000.0, cooldown_sec=120.0)
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            cfg = _make_cfg(
+                llm_provider="ninerouter",
+                llm_fallback="ollama",
+                ninerouter_base_url="http://127.0.0.1:20128/v1",
+                ninerouter_api_key="k",
+                ninerouter_model="m1",
+                ollama_base_url="http://127.0.0.1:11434",
+                ollama_model="qwen3:8b",
+            )
+            with patch("brain.llm.config", cfg):
+                with self.assertLogs("llm", level="WARNING") as cm:
+                    r1, r2 = await asyncio.gather(
+                        client.complete_with_tools([{"role": "user", "content": "hi 1"}]),
+                        client.complete_with_tools([{"role": "user", "content": "hi 2"}]),
+                    )
+            self.assertEqual(r1.text, "from-ollama")
+            self.assertEqual(r2.text, "from-ollama")
+            self.assertEqual(nr_calls, 2)
+            self.assertEqual(ollama_calls, 2)
+            self.assertEqual(len(cm.records), 1)
         finally:
             await client.close()
 

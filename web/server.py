@@ -295,6 +295,8 @@ def create_web_app(
         for skey in ("llm_provider", "ollama_model", "tts_provider", "edge_tts_voice"):
             if skey in body and (not isinstance(body[skey], str) or not body[skey].strip()):
                 raise HTTPException(status_code=400, detail=f"{skey} must be a non-empty string")
+        if "tts_provider" in body and body["tts_provider"].strip().lower() not in ("edge", "piper", "elevenlabs"):
+            raise HTTPException(status_code=400, detail=f"Invalid tts_provider: {body['tts_provider'].strip()}")
 
         if "autonomy_paused" in body:
             await gate.set_paused(body["autonomy_paused"])

@@ -1,6 +1,7 @@
 """Offline unit tests for TTS fallback order, ElevenLabs cooldown, and filler cache keys."""
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import tempfile
@@ -318,6 +319,47 @@ class TestTTSFallbackAndCooldown(unittest.IsolatedAsyncioTestCase):
         finally:
             await eng.close()
 
+    async def test_concurrent_402_warns_once_and_both_use_edge(self) -> None:
+        clock = _FakeClock(8000.0)
+        el_calls = 0
+        both_in_flight = asyncio.Event()
+
+        async def fake_post(url: str, **kwargs) -> httpx.Response:
+            nonlocal el_calls
+            el_calls += 1
+            if el_calls == 2:
+                both_in_flight.set()
+            await asyncio.wait_for(both_in_flight.wait(), timeout=2.0)
+            return httpx.Response(402, json={"detail": {"message": "quota exceeded"}})
+
+        eng = self._make_engine()
+        edge_mock = AsyncMock(return_value=b"EDGE_MP3")
+        try:
+            with (
+                patch.object(config, "tts_provider", "elevenlabs"),
+                patch.object(config, "tts_fallback", ("edge", "piper")),
+                patch.object(config, "elevenlabs_api_key", "sk-test"),
+                patch.object(config, "elevenlabs_voice_id", "voice-1"),
+                patch.object(config, "rvc_enabled", False),
+                patch.object(eng._http, "post", side_effect=fake_post),
+                patch.object(eng, "_synth_edge", edge_mock),
+                patch.object(tts_mod, "audio_bytes_to_pcm48k", side_effect=lambda data, fmt: data),
+                patch.object(tts_mod.time, "monotonic", side_effect=clock),
+                self.assertLogs(tts_mod.log, level="INFO") as logs,
+            ):
+                p1, p2 = await asyncio.gather(
+                    eng.synthesize_pcm("Satu"),
+                    eng.synthesize_pcm("Dua"),
+                )
+            self.assertEqual(p1, b"EDGE_MP3")
+            self.assertEqual(p2, b"EDGE_MP3")
+            self.assertEqual(el_calls, 2)
+            self.assertEqual(edge_mock.await_count, 2)
+            warnings = [r for r in logs.records if r.levelname == "WARNING"]
+            self.assertEqual(len(warnings), 1)
+        finally:
+            await eng.close()
+
     async def test_elevenlabs_undecodable_audio_falls_back_to_edge_without_cooldown(self) -> None:
         clock = _FakeClock(7000.0)
         el_calls = 0
@@ -346,6 +388,47 @@ class TestTTSFallbackAndCooldown(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(pcm2, b"PCM_EDGE_MP3")
                 self.assertEqual(el_calls, 2)
                 self.assertFalse(eng._el_cooldown_active)
+        finally:
+            await eng.close()
+
+    async def test_concurrent_402_warns_once_and_both_use_edge(self) -> None:
+        clock = _FakeClock(8000.0)
+        el_calls = 0
+        both_in_flight = asyncio.Event()
+
+        async def fake_post(url: str, **kwargs) -> httpx.Response:
+            nonlocal el_calls
+            el_calls += 1
+            if el_calls == 2:
+                both_in_flight.set()
+            await asyncio.wait_for(both_in_flight.wait(), timeout=2.0)
+            return httpx.Response(402, json={"detail": {"message": "quota exceeded"}})
+
+        eng = self._make_engine()
+        edge_mock = AsyncMock(return_value=b"EDGE_MP3")
+        try:
+            with (
+                patch.object(config, "tts_provider", "elevenlabs"),
+                patch.object(config, "tts_fallback", ("edge", "piper")),
+                patch.object(config, "elevenlabs_api_key", "sk-test"),
+                patch.object(config, "elevenlabs_voice_id", "voice-1"),
+                patch.object(config, "rvc_enabled", False),
+                patch.object(eng._http, "post", side_effect=fake_post),
+                patch.object(eng, "_synth_edge", edge_mock),
+                patch.object(tts_mod, "audio_bytes_to_pcm48k", side_effect=lambda data, fmt: data),
+                patch.object(tts_mod.time, "monotonic", side_effect=clock),
+                self.assertLogs(tts_mod.log, level="INFO") as logs,
+            ):
+                p1, p2 = await asyncio.gather(
+                    eng.synthesize_pcm("Satu"),
+                    eng.synthesize_pcm("Dua"),
+                )
+            self.assertEqual(p1, b"EDGE_MP3")
+            self.assertEqual(p2, b"EDGE_MP3")
+            self.assertEqual(el_calls, 2)
+            self.assertEqual(edge_mock.await_count, 2)
+            warnings = [r for r in logs.records if r.levelname == "WARNING"]
+            self.assertEqual(len(warnings), 1)
         finally:
             await eng.close()
 

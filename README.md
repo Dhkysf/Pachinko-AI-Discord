@@ -75,11 +75,12 @@ Open https://discord.com/developers/applications → select your bot application
 
 ### Voice / TTS
 - **Options & fallback:** Choose `TTS_PROVIDER` in `.env` between `edge` (default, free Indonesian neural voice), `elevenlabs` (optional API with `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL`), or `piper` (100% local offline ONNX). When the main provider fails, `TTS_FALLBACK` (default `edge,piper`) controls the fallback order, with `piper` always kept as the last resort; ElevenLabs quota/key errors (401/402/429) trigger a 10-minute cooldown straight to the fallback.
+- **Privacy note:** `edge` sends Pachinko's spoken replies (text) to Microsoft and `elevenlabs` sends them to ElevenLabs. `STT_PROVIDER=groq`, or the automatic Groq fallback (local Whisper fails and `GROQ_API_KEY` is set), sends members' voice audio to Groq. `piper` and local Whisper keep everything on this PC.
 - **Out of scope:** Control App UI for TTS settings, and RVC.
 
 ### Control App (`Pachinko.lnk` / `Pachinko.pyw`)
 - <!-- Screenshot placeholder: Pachinko Control window & system tray -->
-- **System tray & status:** Shows live bot state (`Stopped`, `Starting`, `Running`, `Stopping`, `Crashed`, `Already running`), uptime, Discord readiness, Ollama health, and voice session count. Closing with **X** minimizes to the tray when enabled, and tray notifications alert you if the bot crashes or Ollama goes down.
+- **System tray & status:** Shows live bot state (`Stopped`, `Starting`, `Running`, `Stopping`, `Crashed`, `Already running`), uptime, Discord readiness, active LLM provider health (9router / Ollama / OpenAI-compatible), and voice session count. Closing with **X** minimizes to the tray when enabled, and tray notifications alert you if the bot crashes or the active LLM provider's health turns to error.
 - **Pre-flight & LLM picker:** **Check setup** (also run before **Start bot**) checks `.env` + `DISCORD_TOKEN` presence, `ffmpeg` on `PATH`, the selected LLM source (9router or Ollama, plus optional Ollama fallback status when 9router is selected), and `PANEL_PORT`. The **LLM source** and **Model** dropdowns let you switch between `(use .env)`, 9router, and Ollama (saved per source in `data/app_settings.json`, passed via process env vars without touching `.env`).
 - **Backups & diagnostics:** **Backup now** uses SQLite's online backup API to copy `data/pachinko.db` into `data/backups/pachinko-YYYYMMDD-HHMMSS.db` safely while the bot runs (keeping the newest 14). **Copy diagnostics** copies status, versions, pre-flight results, and the last 60 redacted log lines to the clipboard.
 - **Restoring a backup:** Stop the bot, copy the chosen `data/backups/pachinko-*.db` file over `data/pachinko.db`, delete any stale `data/pachinko.db-wal` and `data/pachinko.db-shm` files, then start the bot again.
@@ -113,6 +114,6 @@ Double-click **`check.bat`** (or run `.venv\Scripts\python.exe -m compileall -q 
 ### Runtime Files & Exit Codes
 - **Logs:** `data/logs/pachinko.log` (UTF-8, rotated at 5 MB × 3 backups).
 - **Single-instance lock:** `data/run/bot.lock` (`pid`, `started`). Removed on clean exit; stale locks are replaced.
-- **Status file:** `data/run/status.json` (updated on start and every 10 s with `state`, `pid`, `started`, `discord_ready`, `voice_sessions`, `llm_ok`, `llm_last_provider`, `llm_last_model`, `llm_fallback_active`). Removed on clean exit.
+- **Status file:** `data/run/status.json` (updated on start and every 10 s with `state`, `pid`, `started`, `discord_ready`, `voice_sessions`, `llm_ok`, `llm_provider`, `llm_model`, `ollama_model`, `llm_last_provider`, `llm_last_model`, `llm_fallback_active`). Removed on clean exit.
 - **Stop request:** Create `data/run/stop.request` to trigger a clean shutdown (deleted automatically).
 - **Exit codes:** `0` clean stop, `3` already running, `1` crash.
