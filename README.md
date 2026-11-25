@@ -53,7 +53,7 @@ Open https://discord.com/developers/applications → select your bot application
 1. Extract the `pachinko` folder (e.g. to `C:\pachinko`).
 2. Double-click **`setup.bat`** → fill in `DISCORD_TOKEN` and `GUILD_ID` when Notepad opens → save.
    - **Reproducible fallback:** If a fresh `setup.bat` install breaks due to a newer transitive dependency, install the known-good snapshot instead: `.venv\Scripts\python.exe -m pip install -r requirements-lock.txt`.
-3. Double-click **`Pachinko.lnk`** (or **`Pachinko.pyw`**) to open **Pachinko Control**, then click **Start bot** (`run.bat` remains available as a console fallback).
+3. Double-click **`Pachinko.lnk`** (or **`Pachinko.pyw`**) to open **Pachinko Control**, then click **Start bot** (if the control app will not open, run `.venv\Scripts\python.exe main.py` from the project folder to see errors in a console).
 4. Open **`http://127.0.0.1:7878`** in your browser to open **Pachinko Studio**!
    - **Panel Auth (`.env`, optional):** If `PANEL_TOKEN` is set, open `http://127.0.0.1:7878/?token=<PANEL_TOKEN>` (the token is saved in `sessionStorage` and stripped from the URL).
    - **Configuration (`.env`):** Set `LLM_TEMPERATURE` (`0.0`–`2.0`; leave empty to use the model/Ollama Modelfile default).
@@ -85,7 +85,7 @@ Open https://discord.com/developers/applications → select your bot application
 - **Backups & diagnostics:** **Backup now** uses SQLite's online backup API to copy `data/pachinko.db` into `data/backups/pachinko-YYYYMMDD-HHMMSS.db` safely while the bot runs (keeping the newest 14). **Copy diagnostics** copies status, versions, pre-flight results, and the last 60 redacted log lines to the clipboard.
 - **Restoring a backup:** Stop the bot, copy the chosen `data/backups/pachinko-*.db` file over `data/pachinko.db`, delete any stale `data/pachinko.db-wal` and `data/pachinko.db-shm` files, then start the bot again.
 - **Quick actions:** Start / Stop / Restart bot, Open web panel, Run checks, Update `yt-dlp`, Repair install (`setup.bat`), Edit settings (`.env` in Notepad), and open logs/backups/project folders.
-- **Emergency fallbacks:** `run.bat` and `check.bat` remain in the root folder if you ever need a plain console run.
+- **Emergency fallbacks:** If the control app will not open, run `.venv\Scripts\python.exe main.py` from the project folder to see errors in a console. `check.bat` remains in the root folder for syntax and test checks.
 - **Out of scope:** Single-file `.exe` packaging (PyInstaller), editing `.env` or API keys directly from the app, starting 9router itself from the app, and automatic bot code self-updates.
 
 ---
