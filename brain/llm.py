@@ -28,6 +28,19 @@ def _temperature_kw() -> dict[str, float]:
 
 
 _TOOLS_REJECTED_RE = re.compile(r"(?:tools?|tool_choice|function)", re.IGNORECASE)
+_TOOLS_UNSUPPORTED_RE = re.compile(
+    r"(?:(?:not|doesn't)\s+support|unsupported|not\s+enabled|"
+    r"unknown\s+field|extra_forbidden|tools?\s+(?:are|is)\s+not)",
+    re.IGNORECASE,
+)
+_TOOLS_TRANSIENT_RE = re.compile(
+    r"(?:tool_use_failed|failed\s+to\s+call(?:\s+a)?\s+function)",
+    re.IGNORECASE,
+)
+
+
+def _is_tools_unsupported(err_text: str) -> bool:
+    return bool(_TOOLS_UNSUPPORTED_RE.search(err_text) and not _TOOLS_TRANSIENT_RE.search(err_text))
 
 
 @dataclass(frozen=True)
@@ -551,8 +564,8 @@ class LLMClient:
         if self._in_cooldown(config.llm_provider):
             model = self.last_model if (self.last_was_fallback and self.last_model) else config.ollama_model
             return "ollama", model, True
-        if self.last_provider:
-            return self.last_provider, self.last_model or config.active_model(), self.last_was_fallback
+        if self.last_provider == config.llm_provider and not self.last_was_fallback:
+            return self.last_provider, self.last_model or config.active_model(), False
         return config.llm_provider, config.active_model(), False
 
     def _tools_key(self, provider: str | None = None, model: str | None = None) -> str:
@@ -844,11 +857,16 @@ class LLMClient:
         url = f"{ep.base_url.rstrip('/')}/chat/completions"
         r = await self._http.post(url, json=payload, headers=headers)
         if r.status_code in (400, 422) and "tools" in payload and _TOOLS_REJECTED_RE.search(r.text):
+            err_text = r.text
             payload.pop("tools", None)
             r = await self._http.post(url, json=payload, headers=headers)
-            if r.status_code < 400 and tools_key not in self._no_tools_models:
-                self._no_tools_models.add(tools_key)
-                log.warning("%s model '%s' rejected tools; disabling tools until restart.", ep.name, ep.model)
+            if r.status_code < 400:
+                if _is_tools_unsupported(err_text):
+                    if tools_key not in self._no_tools_models:
+                        self._no_tools_models.add(tools_key)
+                        log.warning("%s model '%s' rejected tools; disabling tools until restart.", ep.name, ep.model)
+                else:
+                    log.info("%s model '%s' hit a transient tool error; retried this turn without tools.", ep.name, ep.model)
         if r.status_code >= 400:
             r.raise_for_status()
         try:

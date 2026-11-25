@@ -74,7 +74,13 @@ _NON_FOREIGN_LANGS = frozenset({
     "singkat", "pendek", "panjang", "yang", "manusia", "komputer", "mesin", "kode",
     "program", "pemrograman", "gue", "gw", "aku", "lo", "lu", "kamu", "saya", "ini",
     "itu", "apa", "sendiri", "kita", "mereka", "dia", "nya",
+    "tubuh", "isyarat", "kiasan", "bunga",
 })
+_BARE_IN_LANG_NAMES = (
+    "english|japanese|korean|chinese|mandarin|arabic|spanish|french|german|"
+    "russian|italian|dutch|portuguese|thai|vietnamese|hindi|turkish|malay|"
+    "javanese|sundanese|tagalog|filipino|latin"
+)
 _FOREIGN_LANG_NAMES = (
     "inggris|english|jepang|japanese|korea|korean|mandarin|cina|china|tionghoa|chinese|"
     "spanyol|spanish|prancis|perancis|french|jerman|german|arab|arabic|rusia|russian|"
@@ -84,11 +90,12 @@ _FOREIGN_LANG_NAMES = (
 )
 _BAHASA_REQ_RE = re.compile(r"\b(?:pakai|pake|dalam|in|dengan|ke|to)\s+bahasa\s+([a-zA-Z]+)\b", re.IGNORECASE)
 _DIRECT_LANG_REQ_RE = re.compile(
-    rf"\b(?:in|(?:translate|terjemah(?:in|kan)?)\b[^.!?\n]{{0,40}}\b(?:ke|to)|"
-    rf"(?:jawab|balas|jelasin|jelaskan|ngomong|bicara|tulis)\s+(?:pakai|pake|dengan|dalam))\s+"
+    rf"\b(?:(?:translate|terjemah(?:in|kan)?)\b[^.!?\n]{{0,40}}\b(?:ke|to|in)|"
+    rf"(?:jawab|balas|jelasin|jelaskan|ngomong|bicara|tulis)\s+(?:pakai|pake|dengan|dalam|in))\s+"
     rf"(?:bahasa\s+)?({_FOREIGN_LANG_NAMES})\b",
     re.IGNORECASE,
 )
+_BARE_IN_LANG_REQ_RE = re.compile(rf"\bin\s+({_BARE_IN_LANG_NAMES})\b", re.IGNORECASE)
 
 
 def requested_language(user_text: str) -> str | None:
@@ -99,7 +106,7 @@ def requested_language(user_text: str) -> str | None:
         lang = m.group(1)
         if lang.lower() not in _NON_FOREIGN_LANGS:
             return lang.capitalize()
-    m = _DIRECT_LANG_REQ_RE.search(user_text)
+    m = _DIRECT_LANG_REQ_RE.search(user_text) or _BARE_IN_LANG_REQ_RE.search(user_text)
     if m:
         return m.group(1).capitalize()
     return None
@@ -126,10 +133,12 @@ def detect_register(user_text: str, recent_user_texts: Iterable[str] = ()) -> st
     return "aku"
 
 
-_PROTECTED_SPAN_RE = re.compile(r"(```[\s\S]*?```|`[^`]*`|https?://\S+|<@!?\d+>|@\w+)")
-_TO_AKU_RE = re.compile(r"\b(?:gue|gw|lo|lu|elo|elu|saya)\b", re.IGNORECASE)
+_PROTECTED_SPAN_RE = re.compile(
+    r'(```[\s\S]*?```|`[^`]*`|https?://\S+|<@!?\d+>|@\w+|"[^"\n]*"|\u201c[^\u201d\n]*\u201d|(?<!\w)\'[^\'\n]*\'(?!\w))'
+)
+_TO_AKU_RE = re.compile(r"(?<![-'\u2019])\b(?:gue|gw|lo|lu|elo|elu|saya)\b(?![-'\u2019])", re.IGNORECASE)
 _TO_AKU_MAP = {"gue": "aku", "gw": "aku", "lo": "kamu", "lu": "kamu", "elo": "kamu", "elu": "kamu", "saya": "aku"}
-_TO_GUE_RE = re.compile(r"\b(?:aku|kamu|saya)\b", re.IGNORECASE)
+_TO_GUE_RE = re.compile(r"(?<![-'\u2019])\b(?:aku|kamu|saya)\b(?![-'\u2019])", re.IGNORECASE)
 _TO_GUE_MAP = {"aku": "gue", "kamu": "lo", "saya": "gue"}
 
 
@@ -151,6 +160,7 @@ _ID_COMMON_WORDS = frozenset({
     "ngobrol", "cerita", "bentar", "nanti", "sekarang", "kita", "mereka", "dengan",
     "atau", "jadi", "biar", "wkwk",
 })
+_ID_STRONG_PRONOUNS = frozenset({"aku", "kamu", "gue", "gw", "elo", "elu", "saya", "anda"})
 _ALPHA_WORD_RE = re.compile(r"[a-z]+")
 
 
@@ -159,6 +169,8 @@ def _is_indonesian(text: str) -> bool:
     words = _ALPHA_WORD_RE.findall(stripped.lower())
     if not words:
         return False
+    if any(w in _ID_STRONG_PRONOUNS for w in words):
+        return True
     hits = sum(1 for w in words if w in _ID_COMMON_WORDS)
     return hits >= 1 if len(words) <= 3 else hits >= 2
 

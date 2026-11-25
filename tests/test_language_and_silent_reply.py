@@ -109,6 +109,10 @@ class TestRequestedLanguageAndPrompt(unittest.TestCase):
             ("terjemahin ke Inggris", "Inggris"),
             ("jawab pakai Jepang", "Jepang"),
             ("jawab pake Inggris", "Inggris"),
+            ("jelasin pakai bahasa Sunda", "Sunda"),
+            ("ngomong pake Jawa", "Jawa"),
+            ("terjemahin ke Korea", "Korea"),
+            ("in Korean", "Korean"),
         )
         for text, expected in positives:
             self.assertEqual(requested_language(text), expected, msg=f"Failed for {text!r}")
@@ -121,6 +125,23 @@ class TestRequestedLanguageAndPrompt(unittest.TestCase):
             "in general this is fine",
             "aku suka bahasa Jepang",
             "jawab pakai poin",
+            "HP ini made in China bagus gak?",
+            "best food in Bali",
+            "liburan in Korea",
+            "trip in Jepang",
+            "makan in Thailand",
+            "jalan in Vietnam",
+            "tinggal in Arab",
+            "kuliner in Jawa",
+            "adat in Sunda",
+            "jelasin pake bahasa tubuh",
+            "jelasin dengan bahasa isyarat",
+            "pakai bahasa kiasan",
+            "dalam bahasa bunga",
+            "pake bahasa gaul",
+            "pake bahasa alay",
+            "pake bahasa formal",
+            "pake bahasa baku",
         )
         for text in negatives:
             self.assertIsNone(requested_language(text), msg=f"Unexpected match for {text!r}")
@@ -147,10 +168,33 @@ class TestRequestedLanguageAndPrompt(unittest.TestCase):
         self.assertIn("Pakai aku/kamu, jangan gue/lo/saya.", msgs[-1]["content"])
 
     def test_normalize_register_skips_non_indonesian_and_keeps_indonesian(self) -> None:
+        from brain.prompt import _is_indonesian
+
         self.assertEqual(normalize_register("Lo siento, no puedo ayudarte.", "aku"), "Lo siento, no puedo ayudarte.")
         self.assertEqual(normalize_register("Lo siento", "aku"), "Lo siento")
         self.assertEqual(normalize_register("I love lo-fi beats while coding", "aku"), "I love lo-fi beats while coding")
         self.assertEqual(normalize_register("Gue lagi capek banget nih", "aku"), "Aku lagi capek banget nih")
+        self.assertEqual(normalize_register("Aku lagi dengerin musik lo-fi nih!", "aku"), "Aku lagi dengerin musik lo-fi nih!")
+        self.assertEqual(normalize_register("musik lo-fi", "aku"), "musik lo-fi")
+        self.assertEqual(normalize_register("Ini gue-banget sih!", "aku"), "Ini gue-banget sih!")
+        self.assertEqual(normalize_register("Aku dengerin lo's playlist nih", "aku"), "Aku dengerin lo's playlist nih")
+        self.assertEqual(
+            normalize_register('Gue suka lagu "Gue Bukan Pilihan" banget', "aku"),
+            'Aku suka lagu "Gue Bukan Pilihan" banget',
+        )
+        self.assertEqual(
+            normalize_register("Gue suka lagu 'Gue Keren' banget", "aku"),
+            "Aku suka lagu 'Gue Keren' banget",
+        )
+        self.assertEqual(
+            normalize_register("Aku ke Jum'at sore terus kamu bilang don't go", "gue"),
+            "Gue ke Jum'at sore terus lo bilang don't go",
+        )
+        self.assertEqual(normalize_register("Saya makan bakso pedas enak.", "aku"), "Aku makan bakso pedas enak.")
+        self.assertEqual(normalize_register("Saya makan bakso pedas enak.", "gue"), "Gue makan bakso pedas enak.")
+        self.assertEqual(normalize_register("Gue makan bakso pedas enak.", "aku"), "Aku makan bakso pedas enak.")
+        self.assertEqual(normalize_register("Lo makan bakso pedas enak.", "aku"), "Lo makan bakso pedas enak.")
+        self.assertTrue(_is_indonesian("Apakah Anda sehat?"))
 
 
 class TestRunnerLanguageAndSilentReplies(unittest.IsolatedAsyncioTestCase):

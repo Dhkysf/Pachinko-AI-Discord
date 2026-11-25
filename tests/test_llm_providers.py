@@ -299,6 +299,91 @@ class TestNineRouterAndOpenAICompat(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_transient_tool_use_failed_retries_once_without_caching(self) -> None:
+        seen_payloads: list[dict[str, Any]] = []
+        turn = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal turn
+            payload = json.loads(request.content.decode("utf-8"))
+            seen_payloads.append(payload)
+            if turn == 0 and "tools" in payload:
+                turn += 1
+                return httpx.Response(
+                    400,
+                    json={
+                        "error": {
+                            "message": "Failed to call a function. Please adjust your prompt.",
+                            "code": "tool_use_failed",
+                        }
+                    },
+                )
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Halo!"}}]})
+
+        client = LLMClient()
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            cfg = _make_cfg(
+                llm_provider="ninerouter",
+                ninerouter_api_key="k",
+                ninerouter_model="llama-3.3-70b",
+                llm_fallback="none",
+            )
+            dummy_tools = [{"type": "function", "function": {"name": "web_search"}}]
+            with patch("brain.llm.config", cfg):
+                with self.assertLogs("llm", level="INFO") as cm:
+                    r1 = await client.complete_with_tools([{"role": "user", "content": "hi"}], tools=dummy_tools)
+                self.assertEqual(r1.text, "Halo!")
+                self.assertEqual(len(seen_payloads), 2)
+                self.assertIn("tools", seen_payloads[0])
+                self.assertNotIn("tools", seen_payloads[1])
+                self.assertTrue(client.supports_tools())
+                self.assertEqual(len(cm.output), 1)
+                self.assertIn("INFO:", cm.output[0])
+
+                r2 = await client.complete_with_tools([{"role": "user", "content": "hi2"}], tools=dummy_tools)
+                self.assertEqual(r2.text, "Halo!")
+                self.assertEqual(len(seen_payloads), 3)
+                self.assertIn("tools", seen_payloads[2])
+        finally:
+            await client.close()
+
+    async def test_permanent_unsupported_tools_errors_are_cached(self) -> None:
+        for err_msg in (
+            "This model does not support tools",
+            "extra_forbidden: tools",
+            "unknown field: tools",
+            "tools are not enabled for this model",
+        ):
+            def handler(request: httpx.Request, msg: str = err_msg) -> httpx.Response:
+                payload = json.loads(request.content.decode("utf-8"))
+                if "tools" in payload:
+                    return httpx.Response(400, json={"error": msg})
+                return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+            client = LLMClient()
+            await client._http.aclose()
+            client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            try:
+                cfg = _make_cfg(
+                    llm_provider="ninerouter",
+                    ninerouter_api_key="k",
+                    ninerouter_model="no-tools-model",
+                    llm_fallback="none",
+                )
+                with patch("brain.llm.config", cfg):
+                    with self.assertLogs("llm", level="WARNING") as cm:
+                        res = await client.complete_with_tools(
+                            [{"role": "user", "content": "hi"}],
+                            tools=[{"type": "function", "function": {"name": "web_search"}}],
+                        )
+                    self.assertEqual(res.text, "ok")
+                    self.assertFalse(client.supports_tools())
+                    self.assertEqual(len(cm.output), 1)
+            finally:
+                await client.close()
+
 
 class TestErrorsAndFallback(unittest.IsolatedAsyncioTestCase):
     async def test_ninerouter_401_403_429_connect_error_logs_and_never_leaks_key(self) -> None:
@@ -682,6 +767,53 @@ class TestHealthStatusAndSafety(unittest.IsolatedAsyncioTestCase):
         out = redact_secrets("NINEROUTER_API_KEY=secret_9r_value")
         self.assertNotIn("secret_9r_value", out)
         self.assertIn("[REDACTED]", out)
+
+    async def test_status_snapshot_resets_after_cooldown_and_panel_provider_switch(self) -> None:
+        now = 1000.0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if url.startswith("http://127.0.0.1:20128/"):
+                raise httpx.ConnectError("Connection refused", request=request)
+            if url.startswith("http://127.0.0.1:1234/"):
+                return httpx.Response(200, json={"choices": [{"message": {"content": "from-openai"}}]})
+            return httpx.Response(200, json={"message": {"content": "from-ollama"}})
+
+        client = LLMClient(clock=lambda: now, cooldown_sec=120.0)
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            cfg = _make_cfg(
+                llm_provider="ninerouter",
+                llm_fallback="ollama",
+                ninerouter_base_url="http://127.0.0.1:20128/v1",
+                ninerouter_api_key="nr-key",
+                ninerouter_model="gpt-4o-mini",
+                openai_base_url="http://127.0.0.1:1234/v1",
+                openai_api_key="oa-key",
+                openai_model="local-qwen",
+                ollama_base_url="http://127.0.0.1:11434",
+                ollama_model="qwen3:8b",
+            )
+            with patch("brain.llm.config", cfg):
+                await client.complete_with_tools([{"role": "user", "content": "hi"}])
+                self.assertEqual(client.status_snapshot(), ("ollama", "qwen3:8b", True))
+
+                # Cooldown expires with no new turn -> reports configured primary provider
+                now += 121.0
+                self.assertEqual(client.status_snapshot(), ("ninerouter", "gpt-4o-mini", False))
+
+                # Panel switches provider -> status_snapshot reflects new provider immediately
+                cfg.llm_provider = "openai_compat"
+                self.assertEqual(client.status_snapshot(), ("openai_compat", "local-qwen", False))
+
+                # Normal turn on openai_compat, then panel switches to ollama
+                await client.complete_with_tools([{"role": "user", "content": "hi"}])
+                self.assertEqual(client.status_snapshot(), ("openai_compat", "local-qwen", False))
+                cfg.llm_provider = "ollama"
+                self.assertEqual(client.status_snapshot(), ("ollama", "qwen3:8b", False))
+        finally:
+            await client.close()
 
 
 if __name__ == "__main__":
