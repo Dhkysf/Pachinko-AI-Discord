@@ -177,6 +177,20 @@ class MemoryManager:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:limit]]
 
+    async def delete_memories(self, ids: list[int]) -> int:
+        unique_ids = list(dict.fromkeys(ids))
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" for _ in unique_ids)
+        cur = await self.store.write(
+            f"DELETE FROM memories WHERE id IN ({placeholders})",
+            unique_ids,
+        )
+        deleted = cur.rowcount
+        if deleted:
+            await self.bus.emit("memory.memories_deleted", count=deleted)
+        return deleted
+
     # ---------------- L3: Living Notebook ----------------
     async def upsert_note(self, doc_key: str, fact: str, evidence: str = "") -> int:
         clean = fact.strip()
@@ -212,6 +226,41 @@ class MemoryManager:
             "SELECT * FROM notebook WHERE active = 1 ORDER BY updated_at DESC LIMIT ?", (limit,)
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    async def delete_notes(self, line_ids: list[int]) -> int:
+        unique_ids = list(dict.fromkeys(line_ids))
+        if not unique_ids:
+            return 0
+        placeholders = ",".join("?" for _ in unique_ids)
+        async with self.store.write_tx() as conn:
+            cur = await conn.execute(
+                f"SELECT line_id, doc_key, fact FROM notebook WHERE active = 1 AND line_id IN ({placeholders})",
+                unique_ids,
+            )
+            rows = await cur.fetchall()
+            if not rows:
+                deleted = 0
+            else:
+                active_ids = [int(r["line_id"]) for r in rows]
+                act_ph = ",".join("?" for _ in active_ids)
+                upd = await conn.execute(
+                    f"UPDATE notebook SET active = 0, updated_at = ? WHERE active = 1 AND line_id IN ({act_ph})",
+                    [time.time(), *active_ids],
+                )
+                deleted = upd.rowcount
+                for r in rows:
+                    doc_key = r["doc_key"]
+                    fact = r["fact"]
+                    suffix = f" — {fact}"
+                    await conn.execute(
+                        "DELETE FROM memories "
+                        "WHERE (scope = ? AND (content = ? OR substr(content, -length(?)) = ?)) "
+                        "OR (scope = 'global' AND content = ?)",
+                        (doc_key, fact, suffix, suffix, fact),
+                    )
+        if deleted:
+            await self.bus.emit("memory.notes_deleted", count=deleted)
+        return deleted
 
     async def auto_capture_user_facts(self, user_id: str, user_name: str, text: str) -> None:
         """Lightweight capture of explicit self-facts without extra LLM cost."""

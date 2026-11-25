@@ -121,6 +121,63 @@ class TestMemoryManager(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_quote_fts_term('ko"pi'), '"ko""pi"')
 
+    async def test_delete_notes_hides_note_and_removes_twins(self) -> None:
+        await self.mem.auto_capture_user_facts("1", "Orenne", "panggil aku Orenne")
+        notes = await self.mem.get_notes("person:1")
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(len(await self.mem.list_all_notes()), 1)
+        self.assertTrue(await self.mem.recall("Orenne", scopes=("person:1",)))
+
+        await self.mem.remember("cuaca cerah hari ini", scope="person:1")
+        line_id = notes[0]["line_id"]
+        self.assertEqual(await self.mem.delete_notes([line_id]), 1)
+        self.assertEqual(await self.mem.get_notes("person:1"), [])
+        self.assertEqual(await self.mem.list_all_notes(), [])
+        recalled = await self.mem.recall("Orenne", scopes=("person:1",))
+        self.assertFalse(any("Orenne" in r["content"] for r in recalled))
+        self.assertIn(("memory.notes_deleted", {"count": 1}), self.bus.events)
+        self.assertEqual(await self.mem.delete_notes([line_id]), 0)
+
+        cur = await self.store.conn.execute("SELECT content FROM memories WHERE scope = 'person:1'")
+        self.assertEqual([r["content"] for r in await cur.fetchall()], ["cuaca cerah hari ini"])
+
+        g_id = await self.mem.upsert_note("self", "Suka teh hijau")
+        await self.mem.remember("Suka teh hijau", scope="global")
+        self.assertEqual(await self.mem.delete_notes([g_id]), 1)
+        cur = await self.store.conn.execute("SELECT content FROM memories WHERE scope = 'global'")
+        self.assertEqual(await cur.fetchall(), [])
+
+    async def test_delete_memories_removes_fts_row(self) -> None:
+        mid = await self.mem.remember("Fakta unik xylophoneunik99", scope="global")
+        await self.mem.remember("Fakta lain biasa", scope="global")
+        cur = await self.store.conn.execute(
+            'SELECT rowid FROM memories_fts WHERE memories_fts MATCH \'"xylophoneunik99"\''
+        )
+        self.assertEqual(len(await cur.fetchall()), 1)
+
+        self.assertEqual(await self.mem.delete_memories([mid]), 1)
+        cur = await self.store.conn.execute(
+            'SELECT rowid FROM memories_fts WHERE memories_fts MATCH \'"xylophoneunik99"\''
+        )
+        self.assertEqual(await cur.fetchall(), [])
+        self.assertIn(("memory.memories_deleted", {"count": 1}), self.bus.events)
+
+    async def test_upsert_note_allows_readding_soft_deleted_fact(self) -> None:
+        id1 = await self.mem.upsert_note("person:u1", "Suka matcha")
+        self.assertEqual(await self.mem.delete_notes([id1]), 1)
+        id2 = await self.mem.upsert_note("person:u1", "Suka matcha")
+        self.assertGreater(id2, id1)
+        notes = await self.mem.get_notes("person:u1")
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["line_id"], id2)
+
+    async def test_delete_unknown_and_empty_ids_return_zero(self) -> None:
+        self.assertEqual(await self.mem.delete_notes([99999]), 0)
+        self.assertEqual(await self.mem.delete_memories([99999]), 0)
+        self.assertEqual(await self.mem.delete_notes([]), 0)
+        self.assertEqual(await self.mem.delete_memories([]), 0)
+        self.assertFalse(any(t in ("memory.notes_deleted", "memory.memories_deleted") for t, _ in self.bus.events))
+
 
 if __name__ == "__main__":
     unittest.main()
