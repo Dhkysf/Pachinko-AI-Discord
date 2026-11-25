@@ -273,6 +273,52 @@ class TestAppExtras(unittest.TestCase):
             writer.rollback()
             writer.close()
 
+    def test_backup_database_from_percent20_dir(self) -> None:
+        src_dir = self.tmp_dir / "100%20dir"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        db_path = src_dir / "pachinko.db"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("CREATE TABLE t(x)")
+            conn.execute("INSERT INTO t VALUES (1)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        created = backup_database(
+            db_path,
+            src_dir / "backups",
+            now=datetime(2026, 11, 25, 7, 0, 0),
+        )
+        self.assertTrue(created.exists())
+        ro = sqlite3.connect(str(created))
+        try:
+            self.assertEqual(ro.execute("SELECT x FROM t").fetchall(), [(1,)])
+        finally:
+            ro.close()
+
+    def test_backup_database_error_cleans_tmp_and_keeps_last_good(self) -> None:
+        db_path = self.tmp_dir / "pachinko.db"
+        backups_dir = self.tmp_dir / "backups"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("CREATE TABLE t(x)")
+            conn.execute("INSERT INTO t VALUES (1)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        good = backup_database(db_path, backups_dir, now=datetime(2026, 11, 25, 7, 0, 0))
+        self.assertTrue(good.exists())
+
+        db_path.write_bytes(b"not a sqlite database" * 64)
+        with self.assertRaises(RuntimeError) as ctx:
+            backup_database(db_path, backups_dir, now=datetime(2026, 11, 25, 8, 0, 0))
+        self.assertIn("Backup failed", str(ctx.exception))
+        self.assertEqual(list(backups_dir.glob("*.tmp")), [])
+        self.assertTrue(good.exists())
+        self.assertEqual([p.name for p in backups_dir.glob("pachinko-*.db")], [good.name])
+
     def test_diagnostics_redacts_planted_secrets(self) -> None:
         log_path = self.tmp_dir / "pachinko.log"
         fake_discord = "M" + ("A" * 24) + "." + ("B" * 6) + "." + ("C" * 28)

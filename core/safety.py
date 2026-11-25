@@ -25,9 +25,10 @@ _ZERO_WIDTH_BIDI = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2066-\u2069\x00-\x0
 
 _SECRET_PATTERNS = [
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsk_[A-Za-z0-9]{20,}\b"),  # ElevenLabs
     re.compile(r"\bgsk_[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),
-    re.compile(r"\b[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27,}\b"),  # Discord token
+    re.compile(r"\b[MNO][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27,}\b"),  # Discord token
 ]
 
 _ENV_SECRET_RE = re.compile(
@@ -36,6 +37,8 @@ _ENV_SECRET_RE = re.compile(
     re.IGNORECASE,
 )
 _BEARER_SECRET_RE = re.compile(r"\b(Bearer\s+)([A-Za-z0-9._~+/=-]{12,})", re.IGNORECASE)
+_XI_KEY_RE = re.compile(r"(\bxi-api-key[\"']?\s*[:=]\s*[\"']?)[^\s\"'`,;&]+", re.IGNORECASE)
+_QUERY_SECRET_RE = re.compile(r"([?&](?:token|key|api_key)=)[^&\s#\"'<>]+", re.IGNORECASE)
 
 
 def redact_secrets(text: str, replacement: str = "[REDACTED]") -> str:
@@ -47,6 +50,8 @@ def redact_secrets(text: str, replacement: str = "[REDACTED]") -> str:
         out = pat.sub(replacement, out)
     out = _ENV_SECRET_RE.sub(rf"\1\2{replacement}", out)
     out = _BEARER_SECRET_RE.sub(rf"\1{replacement}", out)
+    out = _XI_KEY_RE.sub(rf"\1{replacement}", out)
+    out = _QUERY_SECRET_RE.sub(rf"\1{replacement}", out)
     return out
 
 

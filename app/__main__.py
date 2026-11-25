@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -84,11 +85,12 @@ class SingleInstance:
                 except OSError:
                     break
                 with conn:
+                    conn.settimeout(1.0)
                     try:
-                        msg = conn.recv(256).decode("utf-8", errors="ignore").strip()
-                    except OSError:
+                        msg = conn.recv(256).strip()
+                    except OSError:  # includes timeout from idle clients
                         continue
-                    if msg == f"SHOW {self._token}":
+                    if hmac.compare_digest(msg, f"SHOW {self._token}".encode("utf-8")):
                         on_show()
 
         threading.Thread(target=loop, daemon=True).start()

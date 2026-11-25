@@ -483,20 +483,19 @@ def backup_database(
     src: sqlite3.Connection | None = None
     dst: sqlite3.Connection | None = None
     try:
-        src = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=10.0)
-        dst = sqlite3.connect(str(tmp))
-        src.backup(dst)
-    finally:
-        if dst is not None:
-            dst.close()
-        if src is not None:
-            src.close()
-
-    try:
+        try:
+            src = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=10.0)
+            dst = sqlite3.connect(str(tmp))
+            src.backup(dst)
+        finally:
+            if dst is not None:
+                dst.close()
+            if src is not None:
+                src.close()
         os.replace(tmp, target)
-    except Exception:
-        tmp.unlink(missing_ok=True)
-        raise
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)  # connections are closed first so Windows can delete it
+        raise RuntimeError(f"Backup failed: {exc}") from exc
 
     if keep > 0:
         backups = sorted(

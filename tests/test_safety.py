@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from core.safety import data_block, filter_outgoing, neutralize, safe_name
+from core.safety import data_block, filter_outgoing, neutralize, redact_secrets, safe_name
 
 
 class TestSafety(unittest.TestCase):
@@ -69,6 +69,28 @@ class TestSafety(unittest.TestCase):
         self.assertEqual(filter_outgoing("Halo teman-teman!"), "Halo teman-teman!")
         from core.safety import redact_secrets
         self.assertNotIn("AIza", redact_secrets(f"GEMINI_API_KEY={aiza}"))
+
+    def test_redact_secrets_new_formats(self) -> None:
+        el = "sk_" + "a1B2c3D4" * 3
+        self.assertEqual(redact_secrets(el), "[REDACTED]")
+        self.assertEqual(redact_secrets("sk_bunga"), "sk_bunga")
+        self.assertEqual(redact_secrets("Halo teman-teman!"), "Halo teman-teman!")
+
+        for header in ("xi-api-key: abcSECRET12345", "xi-api-key=abcSECRET12345"):
+            out = redact_secrets(header)
+            self.assertNotIn("abcSECRET12345", out)
+            self.assertIn("xi-api-key", out)
+            self.assertIn("[REDACTED]", out)
+
+        url = "https://x.test/cb?token=tokSECRET1&key=keySECRET2&api_key=apiSECRET3&lang=id"
+        out_url = redact_secrets(url)
+        for secret in ("tokSECRET1", "keySECRET2", "apiSECRET3"):
+            self.assertNotIn(secret, out_url)
+        self.assertIn("lang=id", out_url)
+        self.assertIn("[REDACTED]", out_url)
+
+        discord_o = "O" + ("A" * 24) + "." + ("B" * 6) + "." + ("C" * 28)
+        self.assertEqual(redact_secrets(discord_o), "[REDACTED]")
 
 
 if __name__ == "__main__":
