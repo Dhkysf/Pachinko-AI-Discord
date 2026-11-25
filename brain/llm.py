@@ -62,6 +62,11 @@ def _to_gemini_tools(types_mod: Any, tools: list[dict[str, Any]] | None) -> list
     return [tool_cls(function_declarations=decls)] if decls else []
 
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_UNCLOSED_THINK_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(raw: str) -> str:
+    return _UNCLOSED_THINK_RE.sub("", _THINK_TAG_RE.sub("", raw)).strip()
 _TOOL_NAMES: frozenset[str] = frozenset(t["function"]["name"] for t in TOOL_SCHEMAS)
 _TOOL_TAG_BLOCK_RE = re.compile(
     r"(?:```[a-zA-Z]*\s*)?<tool_call>\s*(.*?)\s*</tool_call>(?:\s*```)?",
@@ -125,6 +130,10 @@ class LLMToolCall:
 class LLMResponse:
     text: str = ""
     tool_calls: list[LLMToolCall] = field(default_factory=list)
+    finish_reason: str | None = None
+    has_reasoning: bool = False
+    provider: str = ""
+    model: str = ""
 
 
 def extract_tool_calls_from_text(
@@ -475,22 +484,25 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         *,
         fast_voice: bool = False,
+        max_tokens_scale: int = 1,
     ) -> LLMResponse:
         provider = config.llm_provider
+        scale = max(1, int(max_tokens_scale))
         try:
             if provider == "ollama":
-                res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice)
+                res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice, max_tokens_scale=scale)
             elif provider in ("ninerouter", "openai_compat"):
                 res = await self._openai_once(
                     messages,
                     tools=tools,
                     fast_voice=fast_voice,
                     endpoint=self._openai_endpoint(provider),
+                    max_tokens_scale=scale,
                 )
             elif provider == "gemini":
-                res = await self._gemini_once(messages, tools=tools)
+                res = await self._gemini_once(messages, tools=tools, max_tokens_scale=scale)
             else:
-                res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice)
+                res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice, max_tokens_scale=scale)
             self._mark_ok()
             return res
         except Exception as e:
@@ -498,7 +510,7 @@ class LLMClient:
             if provider != "gemini" and config.gemini_api_key:
                 log.info("Falling back to Gemini API...")
                 try:
-                    res = await self._gemini_once(messages, tools=tools)
+                    res = await self._gemini_once(messages, tools=tools, max_tokens_scale=scale)
                     self._mark_ok()
                     return res
                 except Exception:
@@ -560,8 +572,10 @@ class LLMClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         fast_voice: bool,
+        max_tokens_scale: int = 1,
     ) -> LLMResponse:
         model = config.ollama_model
+        scale = max(1, int(max_tokens_scale))
         payload: dict[str, Any] = {
             "model": model,
             "messages": normalize_messages(messages),
@@ -570,7 +584,7 @@ class LLMClient:
             "think": False,  # Disable long chain-of-thought for instant replies
             "options": {
                 **_temperature_kw(),
-                "num_predict": 320 if fast_voice else (300 if config.llm_compact_prompt else 650),
+                "num_predict": (320 if fast_voice else (300 if config.llm_compact_prompt else 650)) * scale,
             },
         }
         tools_key = self._tools_key("ollama", model)
@@ -594,7 +608,11 @@ class LLMClient:
         r.raise_for_status()
         data = r.json()
         msg = data.get("message", {})
-        content = _THINK_TAG_RE.sub("", msg.get("content", "") or "").strip()
+        raw_content = msg.get("content", "") or ""
+        has_reasoning = bool(
+            msg.get("thinking") or msg.get("reasoning") or msg.get("reasoning_content") or "<think>" in raw_content.lower()
+        )
+        content = _strip_think(raw_content)
         content, text_calls = extract_tool_calls_from_text(content)
 
         tcalls: list[LLMToolCall] = []
@@ -609,7 +627,14 @@ class LLMClient:
             if fn.get("name"):
                 tcalls.append(LLMToolCall(name=fn["name"], arguments=args))
         tcalls.extend(text_calls)
-        return LLMResponse(text=content, tool_calls=tcalls)
+        return LLMResponse(
+            text=content,
+            tool_calls=tcalls,
+            finish_reason=data.get("done_reason"),
+            has_reasoning=has_reasoning,
+            provider="ollama",
+            model=model,
+        )
 
     async def _ollama_stream(self, messages: list[dict[str, Any]], fast_voice: bool) -> AsyncIterator[str]:
         payload: dict[str, Any] = {
@@ -656,14 +681,16 @@ class LLMClient:
         tools: list[dict[str, Any]] | None,
         fast_voice: bool,
         endpoint: _OpenAIEndpoint | None = None,
+        max_tokens_scale: int = 1,
     ) -> LLMResponse:
         ep = endpoint or self._openai_endpoint("openai_compat")
         tools_key = self._tools_key(ep.name, ep.model)
+        scale = max(1, int(max_tokens_scale))
         payload: dict[str, Any] = {
             "model": ep.model,
             "messages": normalize_messages(messages),
             **_temperature_kw(),
-            "max_tokens": 320 if fast_voice else (300 if config.llm_compact_prompt else 650),
+            "max_tokens": (320 if fast_voice else (300 if config.llm_compact_prompt else 650)) * scale,
         }
         if tools and tools_key not in self._no_tools_models:
             payload["tools"] = tools
@@ -687,8 +714,18 @@ class LLMClient:
         if r.status_code >= 400:
             self._log_openai_status(ep, r.status_code)
             r.raise_for_status()
-        choice = r.json()["choices"][0]["message"]
-        content = _THINK_TAG_RE.sub("", choice.get("content") or "").strip()
+        data = r.json()
+        choices = data.get("choices") or []
+        choice0 = choices[0] if choices and isinstance(choices[0], dict) else {}
+        choice = choice0.get("message") if isinstance(choice0.get("message"), dict) else {}
+        raw_content = choice.get("content") or ""
+        has_reasoning = bool(
+            choice.get("reasoning")
+            or choice.get("reasoning_content")
+            or choice.get("thinking")
+            or "<think>" in raw_content.lower()
+        )
+        content = _strip_think(raw_content)
         content, text_calls = extract_tool_calls_from_text(content)
         tcalls: list[LLMToolCall] = []
         for tc in choice.get("tool_calls") or []:
@@ -704,7 +741,14 @@ class LLMClient:
             if fn.get("name"):
                 tcalls.append(LLMToolCall(name=fn["name"], arguments=args))
         tcalls.extend(text_calls)
-        return LLMResponse(text=content, tool_calls=tcalls)
+        return LLMResponse(
+            text=content,
+            tool_calls=tcalls,
+            finish_reason=choice0.get("finish_reason"),
+            has_reasoning=has_reasoning,
+            provider=ep.name,
+            model=ep.model,
+        )
 
     async def _openai_stream(
         self,
@@ -767,9 +811,11 @@ class LLMClient:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        max_tokens_scale: int = 1,
     ) -> LLMResponse:
         client = self._get_gemini_client()
         from google.genai import types
+        scale = max(1, int(max_tokens_scale))
         sys_chunks: list[str] = []
         contents: list[types.Content] = []
         for m in normalize_messages(messages):
@@ -787,7 +833,7 @@ class LLMClient:
                 cfg_kw: dict[str, Any] = {
                     "system_instruction": "\n\n".join(sys_chunks),
                     **_temperature_kw(),
-                    "max_output_tokens": 600,
+                    "max_output_tokens": 600 * scale,
                 }
                 if gemini_tools and self._tools_key("gemini", model) not in self._no_tools_models:
                     cfg_kw["tools"] = gemini_tools
@@ -798,13 +844,21 @@ class LLMClient:
                 )
                 text_parts: list[str] = []
                 tcalls: list[LLMToolCall] = []
+                has_reasoning = False
+                finish_reason: str | None = None
                 candidates = getattr(resp, "candidates", None) or []
+                if candidates:
+                    fr = getattr(candidates[0], "finish_reason", None)
+                    finish_reason = str(fr) if fr is not None else None
                 if candidates and getattr(candidates[0], "content", None):
                     for part in getattr(candidates[0].content, "parts", None) or []:
                         fc = getattr(part, "function_call", None)
                         if fc is not None and getattr(fc, "name", None):
                             args = getattr(fc, "args", None)
                             tcalls.append(LLMToolCall(name=fc.name, arguments=dict(args) if isinstance(args, dict) else {}))
+                        elif getattr(part, "thought", False):
+                            if getattr(part, "text", None):
+                                has_reasoning = True
                         elif getattr(part, "text", None):
                             text_parts.append(part.text)
                 else:
@@ -815,10 +869,20 @@ class LLMClient:
                     if getattr(resp, "text", None):
                         text_parts.append(resp.text)
 
-                content = _THINK_TAG_RE.sub("", "".join(text_parts)).strip()
+                raw_joined = "".join(text_parts)
+                if "<think>" in raw_joined.lower():
+                    has_reasoning = True
+                content = _strip_think(raw_joined)
                 content, text_calls = extract_tool_calls_from_text(content)
                 tcalls.extend(text_calls)
-                return LLMResponse(text=content, tool_calls=tcalls)
+                return LLMResponse(
+                    text=content,
+                    tool_calls=tcalls,
+                    finish_reason=finish_reason,
+                    has_reasoning=has_reasoning,
+                    provider="gemini",
+                    model=model,
+                )
             except Exception as e:
                 log.warning("Gemini model '%s' failed: %s", model, redact_secrets(str(e)))
         raise RuntimeError("All Gemini models failed.")

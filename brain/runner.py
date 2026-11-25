@@ -9,7 +9,7 @@ from typing import AsyncIterator
 
 from brain.llm import LLMClient
 from brain.profile import ProfileManager
-from brain.prompt import assemble_messages, detect_register, normalize_register
+from brain.prompt import assemble_messages, detect_register, normalize_register, requested_language
 from brain.tools import TOOL_SCHEMAS, ToolBox
 from config import config
 from core.bus import EventBus
@@ -103,6 +103,13 @@ def _assistant_tool_turn(text: str | None, tool_calls: list) -> str:
     return f"[memanggil tool: {', '.join(tc.name for tc in tool_calls)}]"
 
 
+def _has_usable_text(raw: str) -> bool:
+    if not raw.strip() or "<silence/>" in raw:
+        return False
+    clean, _, _ = extract_tags(raw)
+    return bool(_PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip())
+
+
 def clean_for_speech(sentence: str) -> tuple[str, list[str]]:
     """Separate spoken text from URLs (URLs are sent to text chat as `aside`)."""
     urls = _URL_RE.findall(sentence)
@@ -180,7 +187,7 @@ class BrainRunner:
         user_text: str,
         modality: str,
         wake_reason: str,
-    ) -> tuple[list[dict], str]:
+    ) -> tuple[list[dict], str | None]:
         prof = self.profiles.current
         person = await self.heart.touch_interaction(user_id, user_name, modality=modality)
         await self.memory.auto_capture_user_facts(user_id, user_name, user_text)
@@ -201,7 +208,11 @@ class BrainRunner:
             content=user_text,
         )
 
-        register = detect_register(user_text, [t["content"] for t in history if t.get("role") == "user"])
+        register = (
+            None
+            if requested_language(user_text)
+            else detect_register(user_text, [t["content"] for t in history if t.get("role") == "user"])
+        )
         messages = assemble_messages(
             profile=prof,
             directives=directives,
@@ -238,6 +249,7 @@ class BrainRunner:
 
             # At most 1 tool-call round, then one final answer without tools
             called_tools: set[str] = set()
+            is_ambient = wake_reason == "ambient_glance"
             try:
                 resp = await self.llm.complete_with_tools(messages, tools=TOOL_SCHEMAS, fast_voice=False)
                 if resp.tool_calls:
@@ -254,6 +266,29 @@ class BrainRunner:
                 log.exception("LLM call failed in text turn")
                 return TurnResult(text=_LLM_ERROR_REPLY, emotion="neutral", silent=False)
 
+            if not is_ambient and not _has_usable_text(resp.text or ""):
+                provider = getattr(resp, "provider", "") or getattr(
+                    self.llm, "active_provider", lambda: config.llm_provider
+                )()
+                model = getattr(resp, "model", "") or config.active_model()
+                finish_reason = getattr(resp, "finish_reason", None)
+                has_reasoning = bool(getattr(resp, "has_reasoning", False))
+                log.warning(
+                    "Empty/silent direct reply (wake_reason=%s, provider=%s, model=%s, finish_reason=%s, has_reasoning=%s); retrying with 2x max_tokens",
+                    wake_reason,
+                    provider,
+                    model,
+                    finish_reason,
+                    has_reasoning,
+                )
+                try:
+                    resp = await self.llm.complete_with_tools(
+                        messages, tools=None, fast_voice=False, max_tokens_scale=2
+                    )
+                except Exception:
+                    log.exception("LLM retry failed in text turn")
+                    return TurnResult(text=_LLM_ERROR_REPLY, emotion="neutral", silent=False)
+
             await self._maybe_reminder_fallback(
                 user_text=user_text,
                 called_tools=called_tools,
@@ -263,12 +298,16 @@ class BrainRunner:
             )
 
             raw = resp.text or ""
-            if "<silence/>" in raw or not raw.strip():
-                await self.bus.emit("brain.decision", room_id=room_id, action="silence", reason=wake_reason)
-                return TurnResult(text="", emotion="neutral", silent=True)
+            if not _has_usable_text(raw):
+                if is_ambient:
+                    await self.bus.emit("brain.decision", room_id=room_id, action="silence", reason=wake_reason)
+                    return TurnResult(text="", emotion="neutral", silent=True)
+                return TurnResult(text=_LLM_ERROR_REPLY, emotion="neutral", silent=False)
 
             clean, explicit_emo, feel_raw = extract_tags(raw)
-            clean = normalize_register(_PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip(), register)
+            clean = _PREFIX_STRIP_RE.sub("", filter_outgoing(clean)).strip()
+            if register is not None:
+                clean = normalize_register(clean, register)
             prof = self.profiles.current
             emotion = await self.heart.apply_feel_block(
                 feel_raw, explicit_emo, user_id, user_name, prof.temperament
@@ -353,7 +392,10 @@ class BrainRunner:
                         prof.temperament,
                     )
                     for part in _SENTENCE_SPLIT_RE.split(clean):
-                        spoken, urls = clean_for_speech(normalize_register(filter_outgoing(part), register))
+                        filtered = filter_outgoing(part)
+                        if register is not None:
+                            filtered = normalize_register(filtered, register)
+                        spoken, urls = clean_for_speech(filtered)
                         if len(spoken) >= 2:
                             yield spoken, emotion, urls
                     return
@@ -385,7 +427,10 @@ class BrainRunner:
                     parts = _SENTENCE_SPLIT_RE.split(buffer)
                     if len(parts) > 1:
                         for ready in parts[:-1]:
-                            spoken, urls = clean_for_speech(normalize_register(filter_outgoing(ready), register))
+                            filtered = filter_outgoing(ready)
+                            if register is not None:
+                                filtered = normalize_register(filtered, register)
+                            spoken, urls = clean_for_speech(filtered)
                             if len(spoken) >= 2:
                                 yield spoken, current_emo, urls
                         buffer = parts[-1]
@@ -407,6 +452,9 @@ class BrainRunner:
             )
 
             tail_rem, _, _ = extract_tags(buffer)
-            spoken_tail, urls_tail = clean_for_speech(normalize_register(filter_outgoing(tail_rem), register))
+            filtered_tail = filter_outgoing(tail_rem)
+            if register is not None:
+                filtered_tail = normalize_register(filtered_tail, register)
+            spoken_tail, urls_tail = clean_for_speech(filtered_tail)
             if len(spoken_tail) >= 2:
                 yield spoken_tail, emotion, urls_tail

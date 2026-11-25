@@ -227,7 +227,9 @@ class TestNoToolsRetryAndErrors(unittest.IsolatedAsyncioTestCase):
         )
         runner = self._make_runner(llm)
         with self.assertLogs("brain.runner", level="ERROR"):
-            res = await runner.run_text_turn(room_id="r1", user_id="u1", user_name="Budi", user_text="Halo")
+            res = await runner.run_text_turn(
+            room_id="r1", user_id="u1", user_name="Budi", user_text="Halo", wake_reason="ambient_glance"
+        )
         self.assertFalse(res.silent)
         self.assertEqual(res.text, "Otakku lagi error, coba lagi bentar ya")
         # User message was recorded, but error fallback was not saved as assistant transcript
@@ -255,7 +257,9 @@ class TestNoToolsRetryAndErrors(unittest.IsolatedAsyncioTestCase):
             supports_tools=MagicMock(return_value=True),
         )
         runner = self._make_runner(llm)
-        res = await runner.run_text_turn(room_id="r1", user_id="u1", user_name="Budi", user_text="Halo")
+        res = await runner.run_text_turn(
+            room_id="r1", user_id="u1", user_name="Budi", user_text="Halo", wake_reason="ambient_glance"
+        )
         self.assertTrue(res.silent)
         self.assertEqual(res.text, "")
 

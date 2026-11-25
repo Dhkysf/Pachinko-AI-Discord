@@ -67,6 +67,46 @@ _REGISTER_LINES = {
     "gue": "Pakai gue/lo, jangan aku/kamu/saya.",
 }
 
+_NON_FOREIGN_LANGS = frozenset({
+    "indonesia", "indo", "indonesian", "santai", "gaul", "baku", "formal", "informal",
+    "sopan", "kasar", "alay", "halus", "sehari", "biasa", "simpel", "simple", "mudah",
+    "singkat", "pendek", "panjang", "yang", "manusia", "komputer", "mesin", "kode",
+    "program", "pemrograman", "gue", "gw", "aku", "lo", "lu", "kamu", "saya", "ini",
+    "itu", "apa", "sendiri", "kita", "mereka", "dia", "nya",
+})
+_FOREIGN_LANG_NAMES = (
+    "inggris|english|jepang|japanese|korea|korean|mandarin|cina|china|tionghoa|chinese|"
+    "spanyol|spanish|prancis|perancis|french|jerman|german|arab|arabic|rusia|russian|"
+    "italia|italian|belanda|dutch|portugis|portuguese|thai|thailand|vietnam|vietnamese|"
+    "hindi|turki|turkish|melayu|malay|jawa|javanese|sunda|sundanese|bali|minang|batak|"
+    "tagalog|filipino|latin"
+)
+_BAHASA_REQ_RE = re.compile(r"\b(?:pakai|pake|dalam|in|dengan|ke|to)\s+bahasa\s+([a-zA-Z]+)\b", re.IGNORECASE)
+_DIRECT_LANG_REQ_RE = re.compile(
+    rf"\b(?:in|(?:translate|terjemah(?:in|kan)?)\b[^.!?\n]{{0,40}}\b(?:ke|to)|"
+    rf"(?:jawab|balas|jelasin|jelaskan|ngomong|bicara|tulis)\s+(?:pakai|pake|dengan|dalam))\s+"
+    rf"(?:bahasa\s+)?({_FOREIGN_LANG_NAMES})\b",
+    re.IGNORECASE,
+)
+
+
+def requested_language(user_text: str) -> str | None:
+    """Return requested foreign language name if user explicitly asked for one."""
+    if not user_text:
+        return None
+    for m in _BAHASA_REQ_RE.finditer(user_text):
+        lang = m.group(1)
+        if lang.lower() not in _NON_FOREIGN_LANGS:
+            return lang.capitalize()
+    m = _DIRECT_LANG_REQ_RE.search(user_text)
+    if m:
+        return m.group(1).capitalize()
+    return None
+
+
+def _lang_override_line(lang: str, display_name: str) -> str:
+    return f"User minta jawaban dalam bahasa {lang}. Jawab dalam bahasa itu, tetap dengan gaya {display_name}."
+
 
 def detect_register(user_text: str, recent_user_texts: Iterable[str] = ()) -> str:
     """Return 'gue' if user uses gue/lo register, otherwise 'aku'."""
@@ -100,9 +140,31 @@ def _match_case(word: str, replacement: str) -> str:
     return replacement
 
 
-def normalize_register(text: str, register: str) -> str:
+_ID_COMMON_WORDS = frozenset({
+    "aku", "kamu", "gue", "gw", "elo", "elu", "saya", "yang", "dan", "ke", "dari",
+    "untuk", "ini", "itu", "lagi", "udah", "sudah", "belum", "nggak", "gak", "tidak",
+    "bukan", "kalau", "kalo", "tapi", "bisa", "ada", "aja", "banget", "kok", "sih",
+    "dong", "deh", "nih", "yuk", "juga", "sama", "buat", "mau", "tahu", "tau",
+    "kayak", "cuma", "emang", "saja", "adalah", "pakai", "pake", "halo", "oke", "iya",
+    "setuju", "datang", "kenapa", "apa", "siapa", "gimana", "suka", "dengerin",
+    "ngobrol", "cerita", "bentar", "nanti", "sekarang", "kita", "mereka", "dengan",
+    "atau", "jadi", "biar", "wkwk",
+})
+_ALPHA_WORD_RE = re.compile(r"[a-z]+")
+
+
+def _is_indonesian(text: str) -> bool:
+    stripped = _PROTECTED_SPAN_RE.sub(" ", text)
+    words = _ALPHA_WORD_RE.findall(stripped.lower())
+    if not words:
+        return False
+    hits = sum(1 for w in words if w in _ID_COMMON_WORDS)
+    return hits >= 1 if len(words) <= 3 else hits >= 2
+
+
+def normalize_register(text: str, register: str | None) -> str:
     """Swap wrong-register pronouns outside code blocks, URLs, and @mentions."""
-    if not text:
+    if not text or not register or not _is_indonesian(text):
         return text
     pat, mapping = (_TO_GUE_RE, _TO_GUE_MAP) if register == "gue" else (_TO_AKU_RE, _TO_AKU_MAP)
     parts = _PROTECTED_SPAN_RE.split(text)
@@ -162,8 +224,11 @@ def _assemble_legacy_messages(
     modality: str,
     wake_reason: str,
 ) -> list[dict[str, Any]]:
+    req_lang = requested_language(user_text)
+    lang_override = _lang_override_line(req_lang, profile.display_name) if req_lang else None
+
     sys_parts = [
-        _LANGUAGE_RULE,
+        lang_override or _LANGUAGE_RULE,
         profile.identity_md,
         profile.style_md,
         _RUNNER_RULES,
@@ -235,7 +300,7 @@ def _assemble_legacy_messages(
     safe_user = data_block(f"chat:{sname}", user_text, title=modality)
     user_msg = f"[{sname}]:\n{safe_user}"
     recent_user_texts = [t["content"] for t in history if t.get("role") == "user"]
-    reg_line = _REGISTER_LINES[detect_register(user_text, recent_user_texts)]
+    reg_line = lang_override or _REGISTER_LINES[detect_register(user_text, recent_user_texts)]
     final_user = f"{tail_ctx}\n\n{user_msg}\n\n{reg_line}" if tail_ctx else f"{user_msg}\n\n{reg_line}"
     messages.append({"role": "user", "content": final_user})
     return messages
@@ -271,8 +336,11 @@ def assemble_messages(
         )
 
     # Blocks 1 & 3: Fixed System (Language Rule + Identity + Style + Rules + Owner Directives)
+    req_lang = requested_language(user_text)
+    lang_override = _lang_override_line(req_lang, profile.display_name) if req_lang else None
+
     sys_parts = [
-        _COMPACT_LANGUAGE_RULE,
+        lang_override or _COMPACT_LANGUAGE_RULE,
         profile.identity_md,
         profile.style_md,
         _COMPACT_RUNNER_RULES,
@@ -350,7 +418,7 @@ def assemble_messages(
     sent_range = "1-2 kalimat" if modality == "voice" else "1-3 kalimat"
     recent_user_texts = [t["content"] for t in history if t.get("role") == "user"]
     reg_line = _REGISTER_LINES[detect_register(user_text, recent_user_texts)]
-    reminder = (
+    reminder = lang_override or (
         f"Jawab sebagai {profile.display_name} pakai bahasa Indonesia santai, {sent_range}, "
         "nyambung sama pesan terakhir. Kalau nggak ngerti slang-nya, tanya balik. "
         f"Kalau user minta pengingat, cari info, atau putar lagu, panggil tool-nya dulu. {reg_line}"
