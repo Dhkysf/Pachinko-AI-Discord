@@ -40,6 +40,38 @@ _BEARER_SECRET_RE = re.compile(r"\b(Bearer\s+)([A-Za-z0-9._~+/=-]{12,})", re.IGN
 _XI_KEY_RE = re.compile(r"(\bxi-api-key[\"']?\s*[:=]\s*[\"']?)[^\s\"'`,;&]+", re.IGNORECASE)
 _QUERY_SECRET_RE = re.compile(r"([?&](?:token|key|api_key)=)[^&\s#\"'<>]+", re.IGNORECASE)
 
+_HTML_ENTITY_MAP = {
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&quot;": '"',
+    "&#39;": "'",
+    "&nbsp;": " ",
+}
+_HTML_ENTITY_RE = re.compile(r"&(?:amp|lt|gt|quot|#39|nbsp);", re.IGNORECASE)
+_HTML_PAIRED_RULES = (
+    (re.compile(r"<(p)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL), lambda m: f"{m.group(2)}\n"),
+    (re.compile(r"<(b|strong)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL), lambda m: f"**{m.group(2)}**" if m.group(2).strip() else m.group(2)),
+    (re.compile(r"<(i|em)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL), lambda m: f"*{m.group(2)}*" if m.group(2).strip() else m.group(2)),
+    (re.compile(r"<(u)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL), lambda m: f"__{m.group(2)}__" if m.group(2).strip() else m.group(2)),
+    (re.compile(r"<(s|del|strike)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL), lambda m: f"~~{m.group(2)}~~" if m.group(2).strip() else m.group(2)),
+    (re.compile(r"<(code)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL), lambda m: f"`{m.group(2)}`" if m.group(2).strip() else m.group(2)),
+)
+_HTML_BR_RE = re.compile(r"<br\b[^>]*/?>", re.IGNORECASE)
+_HTML_LEFTOVER_RE = re.compile(r"</?(?:i|em|b|strong|u|s|del|strike|code|br|p)\b[^>]*/?>", re.IGNORECASE)
+
+
+def html_to_discord_md(text: str) -> str:
+    """Convert common model-emitted HTML formatting to Discord markdown."""
+    if not text or ("<" not in text and "&" not in text):
+        return text
+    out = text
+    for pat, repl in _HTML_PAIRED_RULES:
+        out = pat.sub(repl, out)
+    out = _HTML_BR_RE.sub("\n", out)
+    out = _HTML_LEFTOVER_RE.sub("", out)
+    return _HTML_ENTITY_RE.sub(lambda m: _HTML_ENTITY_MAP[m.group(0).lower()], out)
+
 
 def redact_secrets(text: str, replacement: str = "[REDACTED]") -> str:
     """Redact API keys, tokens, and secret env/header assignments from text."""
@@ -84,10 +116,11 @@ def data_block(source: str, content: str, *, title: str = "", max_chars: int = 6
 
 
 def filter_outgoing(text: str) -> str:
-    """Block @everyone/@here and redact API secrets if accidentally leaked."""
+    """Convert model HTML, block @everyone/@here, and redact API secrets if accidentally leaked."""
     if not text:
         return ""
-    out = text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+    out = html_to_discord_md(text)
+    out = out.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
     out = re.sub(r"<@&\d+>", "[role]", out)
     out = redact_secrets(out, "[RAHASIA_DISENSOR]")
     return out.strip()

@@ -13,7 +13,7 @@ from brain.prompt import assemble_messages, detect_register, normalize_register,
 from brain.tools import TOOL_SCHEMAS, ToolBox
 from config import config
 from core.bus import EventBus
-from core.safety import filter_outgoing
+from core.safety import filter_outgoing, html_to_discord_md
 from core.store import Store
 from heart.engine import HeartEngine, extract_tags
 from memory.manager import MemoryManager
@@ -23,6 +23,8 @@ log = logging.getLogger("brain.runner")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?~])\s+|\n+")
 _URL_RE = re.compile(r"https?://\S+")
 _PREFIX_STRIP_RE = re.compile(r"^\[[^\]]+\]:\s*")
+_ANY_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^<>]*)?/?>")
+_OPEN_TAG_RE = re.compile(r"<(?:[/?!@#:a-zA-Z][^>]*)?$")
 _LLM_ERROR_REPLY = "Otakku lagi error, coba lagi bentar ya"
 
 _REMINDER_VERB_RE = re.compile(
@@ -141,6 +143,8 @@ def clean_for_speech(sentence: str) -> tuple[str, list[str]]:
     urls = _URL_RE.findall(sentence)
     s = _URL_RE.sub(" tautan di chat ", sentence)
     s = _PREFIX_STRIP_RE.sub("", s)
+    s = html_to_discord_md(s)
+    s = _ANY_HTML_TAG_RE.sub("", s)
     s = re.sub(r"```.*?```", " ", s, flags=re.S)
     s = re.sub(r"[*_`#>~]", "", s)
     # Strip common kaomoji so TTS does not spell out parentheses/symbols
@@ -457,8 +461,11 @@ class BrainRunner:
                         current_emo = emo_m.group(1).lower()
                         buffer = re.sub(r"<emo:[a-z_]+>", "", buffer, flags=re.I)
 
-                    # Split per sentence as soon as a period/question/exclamation mark followed by space appears
-                    parts = _SENTENCE_SPLIT_RE.split(buffer)
+                    # Split per sentence as soon as a period/question/exclamation mark followed by space appears,
+                    # holding back any trailing unfinished <tag...> so split HTML/Discord tags are not cut mid-tag.
+                    m_open = _OPEN_TAG_RE.search(buffer)
+                    splittable, held = (buffer[:m_open.start()], buffer[m_open.start():]) if m_open else (buffer, "")
+                    parts = _SENTENCE_SPLIT_RE.split(splittable)
                     if len(parts) > 1:
                         for ready in parts[:-1]:
                             filtered = filter_outgoing(ready)
@@ -467,7 +474,7 @@ class BrainRunner:
                             spoken, urls = clean_for_speech(filtered)
                             if len(spoken) >= 2:
                                 yield spoken, current_emo, urls
-                        buffer = parts[-1]
+                        buffer = parts[-1] + held
             except Exception:
                 log.exception("LLM stream failed in voice turn")
                 return

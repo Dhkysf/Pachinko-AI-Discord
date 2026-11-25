@@ -11,7 +11,7 @@ import httpx
 
 from brain.llm import LLMClient, LLMResponse, _filter_stream
 from brain.profile import CharacterProfile
-from brain.runner import BrainRunner
+from brain.runner import BrainRunner, clean_for_speech
 
 
 def _fake_profile() -> CharacterProfile:
@@ -203,6 +203,48 @@ class TestLLMStreamAndVoiceTurn(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(llm.complete_with_tools.await_count, 1)
         self.assertEqual(stream_calls, 0)
         self.assertEqual(items, [])
+
+    async def test_stream_voice_turn_strips_split_html_tags(self) -> None:
+        async def fake_stream(messages: list[dict[str, Any]], fast_voice: bool = True):
+            yield "<i>jet"
+            yield "lag</i> ya"
+
+        llm = types.SimpleNamespace(
+            complete_with_tools=AsyncMock(),
+            stream_text=fake_stream,
+            supports_tools=MagicMock(return_value=True),
+        )
+        runner = self._make_runner(llm)
+        items = [
+            x
+            async for x in runner.stream_voice_turn(
+                room_id="r1", user_id="u1", user_name="Budi", user_text="halo"
+            )
+        ]
+        self.assertEqual(items, [("jetlag ya", "neutral", [])])
+
+    async def test_stream_voice_turn_holds_unfinished_tag_across_sentence_split(self) -> None:
+        async def fake_stream(messages: list[dict[str, Any]], fast_voice: bool = True):
+            yield "Halo! <em class='x"
+            yield "'>keren</em> ya."
+
+        llm = types.SimpleNamespace(
+            complete_with_tools=AsyncMock(),
+            stream_text=fake_stream,
+            supports_tools=MagicMock(return_value=True),
+        )
+        runner = self._make_runner(llm)
+        items = [
+            x
+            async for x in runner.stream_voice_turn(
+                room_id="r1", user_id="u1", user_name="Budi", user_text="halo"
+            )
+        ]
+        self.assertEqual(items, [("Halo!", "neutral", []), ("keren ya.", "neutral", [])])
+
+    def test_clean_for_speech_strips_html_and_keeps_math(self) -> None:
+        self.assertEqual(clean_for_speech("mending <i>jetlag</i> &amp; <span>oke</span>"), ("mending jetlag & oke", []))
+        self.assertEqual(clean_for_speech("5 < 6"), ("5 < 6", []))
 
 
 if __name__ == "__main__":

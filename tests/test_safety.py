@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from core.safety import data_block, filter_outgoing, neutralize, redact_secrets, safe_name
+from core.safety import data_block, filter_outgoing, html_to_discord_md, neutralize, redact_secrets, safe_name
 
 
 class TestSafety(unittest.TestCase):
@@ -91,6 +91,34 @@ class TestSafety(unittest.TestCase):
 
         discord_o = "O" + ("A" * 24) + "." + ("B" * 6) + "." + ("C" * 28)
         self.assertEqual(redact_secrets(discord_o), "[REDACTED]")
+
+    def test_html_to_discord_md_and_filter_outgoing(self) -> None:
+        self.assertEqual(filter_outgoing("nggak <i>jetlag</i>."), "nggak *jetlag*.")
+        self.assertEqual(filter_outgoing("<B>wih</B> <em class='x'>keren</em>"), "**wih** *keren*")
+        self.assertEqual(
+            filter_outgoing("<strong>t</strong> <u>u</u> <s>s</s> <del>d</del> <strike>k</strike> <code>c</code>"),
+            "**t** __u__ ~~s~~ ~~d~~ ~~k~~ `c`",
+        )
+        self.assertEqual(filter_outgoing("a<br>b"), "a\nb")
+        self.assertEqual(filter_outgoing("a<BR/>b"), "a\nb")
+        self.assertEqual(filter_outgoing("<p>satu</p><p>dua</p>"), "satu\ndua")
+
+        discord_syntax = "hai <@123> <@!123> <#456> <:pog:789> <a:wave:789> <t:1700000000:R> <https://example.com/>"
+        self.assertEqual(filter_outgoing(discord_syntax), discord_syntax)
+        self.assertEqual(filter_outgoing("hai <@&123>"), "hai [role]")
+
+        own_tags = '<silence/> <data source="x">hi</data> <emo:happy> <feel>self: joy weak</feel>'
+        self.assertEqual(html_to_discord_md(own_tags), own_tags)
+
+        self.assertEqual(filter_outgoing("halo</i>"), "halo")
+        self.assertEqual(filter_outgoing("</i>"), "")
+        self.assertEqual(filter_outgoing("5 < 6"), "5 < 6")
+        self.assertEqual(
+            filter_outgoing('a &amp; b &lt; c &gt; d &quot;e&quot; &#39;f&#39; g&nbsp;h'),
+            'a & b < c > d "e" \'f\' g h',
+        )
+        self.assertEqual(filter_outgoing("<b><i>hi</i></b>"), "***hi***")
+        self.assertEqual(filter_outgoing("<i></i>"), "")
 
 
 if __name__ == "__main__":

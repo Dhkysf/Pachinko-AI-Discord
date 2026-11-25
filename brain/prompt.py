@@ -48,6 +48,7 @@ _COMPACT_RUNNER_RULES = """
 2. Opsional, di awal kalimat pertama boleh pakai maksimal satu tag ekspresi: `<emo:happy>`, `<emo:smug>`, `<emo:shy>`, `<emo:angry>`, `<emo:annoyed>`, `<emo:sad>`, `<emo:surprised>`, `<emo:thinking>`, atau `<emo:neutral>`.
 3. Jika sedang mode menyimak (`ambient_glance`) dan obrolan tidak perlu dikomentari, balas `<silence/>` saja.
 4. Kamu belum bisa melihat gambar, GIF, atau stiker; tanggapi konteks obrolannya atau bilang jujur dengan santai, jangan pura-pura bisa lihat.
+5. Pakai format Discord (*miring*, **tebal**), jangan HTML.
 """.strip()
 
 _MOOD_LABELS = {
