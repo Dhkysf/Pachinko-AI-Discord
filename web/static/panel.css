@@ -381,6 +381,39 @@ textarea:focus-visible {
   word-break: break-word;
 }
 
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.mem-row {
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.mem-chk,
+.check-label input[type="checkbox"] {
+  accent-color: var(--accent-amber);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.mem-chk {
+  margin-top: 2px;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;

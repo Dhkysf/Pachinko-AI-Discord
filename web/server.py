@@ -67,6 +67,15 @@ def _validate_lore_entries(entries: Any) -> list[dict[str, Any]]:
     return entries
 
 
+def _parse_id_list(val: Any, field: str) -> list[int]:
+    if not isinstance(val, list):
+        raise HTTPException(status_code=400, detail=f"{field} must be a list of integers")
+    for item in val:
+        if isinstance(item, bool) or not isinstance(item, int):
+            raise HTTPException(status_code=400, detail=f"{field} items must be integers")
+    return val
+
+
 def create_web_app(
     *,
     store: Store,
@@ -258,6 +267,22 @@ def create_web_app(
         await memory.upsert_note(doc_key, fact, evidence="Added via Admin Panel")
         await memory.remember(fact, scope="global", importance=0.85)
         return {"ok": True}
+
+    @app.post("/api/memory/delete")
+    async def api_delete_memory(req: Request):
+        _check_origin(req)
+        _check_auth(req)
+        body = await _json_dict(req)
+        notebook_ids = _parse_id_list(body.get("notebook_ids", []), "notebook_ids")
+        memory_ids = _parse_id_list(body.get("memory_ids", []), "memory_ids")
+        total = len(notebook_ids) + len(memory_ids)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="Provide at least one id in notebook_ids or memory_ids")
+        if total > 200:
+            raise HTTPException(status_code=400, detail="Maximum 200 ids per request")
+        notebook_deleted = await memory.delete_notes(notebook_ids) if notebook_ids else 0
+        memories_deleted = await memory.delete_memories(memory_ids) if memory_ids else 0
+        return {"ok": True, "notebook_deleted": notebook_deleted, "memories_deleted": memories_deleted}
 
     @app.post("/api/runtime")
     async def api_update_runtime(req: Request):

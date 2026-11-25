@@ -205,13 +205,94 @@ async function loadPeople() {
 async function loadMemory() {
   const { notebook, memories } = await api('/api/memory');
   $('#notebook-list').innerHTML = notebook.length
-    ? notebook.map((n) => `<div class="event-item"><span class="event-topic">${esc(n.doc_key)}</span><span class="event-body">${esc(n.fact)}</span></div>`).join('')
+    ? notebook
+        .map(
+          (n) =>
+            `<label class="event-item mem-row"><input type="checkbox" class="mem-chk" data-id="${esc(n.line_id)}"><span class="event-topic">${esc(n.doc_key)}</span><span class="event-body">${esc(n.fact)}</span></label>`
+        )
+        .join('')
     : '<div style="color:var(--text-muted)">No notes in Living Notebook yet.</div>';
 
   $('#memories-list').innerHTML = memories.length
-    ? memories.map((m) => `<div class="event-item"><span class="event-topic">${esc(m.scope)}</span><span class="event-body">${esc(m.content)}</span></div>`).join('')
+    ? memories
+        .map(
+          (m) =>
+            `<label class="event-item mem-row"><input type="checkbox" class="mem-chk" data-id="${esc(m.id)}"><span class="event-topic">${esc(m.scope)}</span><span class="event-body">${esc(m.content)}</span></label>`
+        )
+        .join('')
     : '<div style="color:var(--text-muted)">No episodic memories yet.</div>';
+
+  syncMemSelection('notebook');
+  syncMemSelection('memories');
 }
+
+function syncMemSelection(kind) {
+  const boxes = [...$$(`#${kind}-list .mem-chk`)];
+  const checked = boxes.filter((b) => b.checked).length;
+  const allChk = $(`#chk-${kind}-all`);
+  const btn = $(`#btn-delete-${kind}`);
+  if (allChk) {
+    allChk.disabled = boxes.length === 0;
+    allChk.checked = boxes.length > 0 && checked === boxes.length;
+    allChk.indeterminate = checked > 0 && checked < boxes.length;
+  }
+  if (btn) {
+    btn.textContent = `Delete selected (${checked})`;
+    btn.disabled = checked === 0 || btn.dataset.busy === '1';
+  }
+}
+
+function bindMemoryList(kind) {
+  const list = $(`#${kind}-list`);
+  const allChk = $(`#chk-${kind}-all`);
+  const btn = $(`#btn-delete-${kind}`);
+  if (!list || !allChk || !btn) return;
+
+  list.addEventListener('change', (e) => {
+    if (e.target.classList.contains('mem-chk')) syncMemSelection(kind);
+  });
+
+  allChk.addEventListener('change', () => {
+    $$(`#${kind}-list .mem-chk`).forEach((b) => {
+      b.checked = allChk.checked;
+    });
+    syncMemSelection(kind);
+  });
+
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return;
+    const ids = [...$$(`#${kind}-list .mem-chk:checked`)].map((b) => Number(b.dataset.id));
+    if (!ids.length) return;
+    const n = ids.length;
+    const msg =
+      kind === 'notebook'
+        ? `Delete ${n} notebook ${n === 1 ? 'note' : 'notes'}? Matching episodic memories will also be removed.`
+        : `Delete ${n} episodic ${n === 1 ? 'memory' : 'memories'}?`;
+    if (!confirm(msg)) return;
+
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    try {
+      const payload = kind === 'notebook' ? { notebook_ids: ids } : { memory_ids: ids };
+      const res = await api('/api/memory/delete', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      const count = kind === 'notebook' ? res.notebook_deleted : res.memories_deleted;
+      toast(`Deleted ${count} ${kind === 'notebook' ? 'notebook' : 'episodic'} ${count === 1 ? 'entry' : 'entries'}`);
+      await loadMemory();
+    } catch (e) {
+      console.error(e);
+      toast(`Error: ${e.message || e}`);
+    } finally {
+      delete btn.dataset.busy;
+      syncMemSelection(kind);
+    }
+  });
+}
+
+bindMemoryList('notebook');
+bindMemoryList('memories');
 
 /* Actions */
 $('#btn-refresh-all').addEventListener('click', (e) =>

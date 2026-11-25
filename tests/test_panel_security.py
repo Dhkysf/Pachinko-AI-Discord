@@ -27,12 +27,15 @@ def _make_app():
     async def _remember(*_args, **_kwargs):
         return 1
 
+    async def _delete_ids(ids):
+        return len(ids)
+
     return create_web_app(
         store=SimpleNamespace(),
         bus=bus,
         profiles=SimpleNamespace(current=prof),
         heart=SimpleNamespace(state_summary=lambda _t: {"dominant": "neutral", "valence": 0.0, "energy": 0.8, "active_emotions": {}}),
-        memory=SimpleNamespace(upsert_note=_upsert_note, remember=_remember),
+        memory=SimpleNamespace(upsert_note=_upsert_note, remember=_remember, delete_notes=_delete_ids, delete_memories=_delete_ids),
         gate=SimpleNamespace(paused=False),
         brain=SimpleNamespace(),
         singing=SimpleNamespace(snapshot=lambda: {"current": None, "queue": []}, skip_current=lambda: True),
@@ -183,6 +186,45 @@ class TestPanelSecurity(unittest.TestCase):
             403,
         )
         self.assertEqual(client.post("/api/sing/skip").status_code, 200)
+
+    def test_delete_memory_auth_validation_and_origin(self):
+        config.panel_token = "secret-tok"
+        client = self._client(_make_app())
+        valid = {"notebook_ids": [1, 2], "memory_ids": [3]}
+
+        self.assertEqual(client.post("/api/memory/delete", json=valid).status_code, 401)
+        self.assertEqual(
+            client.post("/api/memory/delete", json=valid, headers={"Authorization": "Bearer wrong"}).status_code,
+            401,
+        )
+        res = client.post("/api/memory/delete", json=valid, headers={"Authorization": "Bearer secret-tok"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"ok": True, "notebook_deleted": 2, "memories_deleted": 1})
+
+        config.panel_token = ""
+        client = self._client(_make_app())
+        for bad in (
+            {},
+            {"notebook_ids": [], "memory_ids": []},
+            {"notebook_ids": ["1"]},
+            {"notebook_ids": [True]},
+            {"memory_ids": [1.5]},
+            {"notebook_ids": None, "memory_ids": [1]},
+            {"notebook_ids": list(range(1, 202))},
+            {"notebook_ids": list(range(1, 102)), "memory_ids": list(range(1, 101))},
+        ):
+            self.assertEqual(client.post("/api/memory/delete", json=bad).status_code, 400, f"Expected 400 for {bad!r}")
+
+        self.assertEqual(client.post("/api/memory/delete", json={"notebook_ids": list(range(1, 201))}).status_code, 200)
+        self.assertEqual(
+            client.post("/api/memory/delete", json=valid, headers={"Origin": "http://evil.example"}).status_code,
+            403,
+        )
+        self.assertEqual(
+            client.post("/api/memory/delete", json=valid, headers={"Origin": "http://127.0.0.1:7878"}).status_code,
+            200,
+        )
+        self.assertEqual(client.post("/api/memory/delete", json=valid).status_code, 200)
 
 
 if __name__ == "__main__":
