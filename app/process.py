@@ -38,33 +38,36 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "llm_source": "",
     "model_ollama": "",
     "model_ninerouter": "",
-    "model_gemini": "",
 }
 
-LLM_SOURCES = ("ollama", "ninerouter", "gemini")
+LLM_SOURCES = ("ninerouter", "ollama")
 SOURCE_LABELS: dict[str, str] = {
-    "ollama": "Ollama",
     "ninerouter": "9router",
-    "gemini": "Gemini",
+    "ollama": "Ollama",
     "openai_compat": "OpenAI-compat",
 }
 MODEL_SETTING_KEY: dict[str, str] = {
     "ollama": "model_ollama",
     "ninerouter": "model_ninerouter",
-    "gemini": "model_gemini",
 }
 SOURCE_MODEL_ENV_VAR: dict[str, str] = {
     "ollama": "OLLAMA_MODEL",
     "ninerouter": "NINEROUTER_MODEL",
-    "gemini": "GEMINI_MODEL",
 }
-_LLM_OVERRIDE_VARS = ("LLM_PROVIDER", "OLLAMA_MODEL", "NINEROUTER_MODEL", "GEMINI_MODEL")
+_LLM_OVERRIDE_VARS = ("LLM_PROVIDER", "OLLAMA_MODEL", "NINEROUTER_MODEL")
 
 
 def source_label(source: str) -> str:
     """Return display label for an LLM source."""
     key = (source or "").strip().lower()
-    return SOURCE_LABELS.get(key, key or "Ollama")
+    return SOURCE_LABELS.get(key, key or "9router")
+
+
+def llm_display_label(provider: str, fallback_active: bool = False) -> str:
+    """Return display label for the active LLM provider, noting Ollama fallback."""
+    if fallback_active:
+        return "Ollama fallback"
+    return source_label(provider)
 
 
 def build_llm_env_overrides(llm_source: str, llm_model: str) -> dict[str, str]:
@@ -83,7 +86,7 @@ def effective_llm_selection(settings: dict[str, Any], env: dict[str, Any]) -> tu
     """Resolve effective (source, model) from UI settings falling back to .env summary."""
     src = str(settings.get("llm_source", "") or "").strip().lower()
     if src not in LLM_SOURCES:
-        env_src = str(env.get("llm_provider", "ollama") or "ollama").strip().lower()
+        env_src = str(env.get("llm_provider", "ninerouter") or "ninerouter").strip().lower()
         return env_src, str(env.get(f"{env_src}_model", "") or "").strip()
     model_key = MODEL_SETTING_KEY[src]
     chosen = str(settings.get(model_key, "") or "").strip()
@@ -110,6 +113,18 @@ class BotStatus:
     llm_provider: str = ""
     llm_model: str = ""
     ollama_model: str = ""
+    llm_last_provider: str = ""
+    llm_last_model: str = ""
+    llm_fallback_active: bool = False
+
+
+def format_llm_status(status: BotStatus, default_source: str = "ninerouter") -> str:
+    """Format the status bar LLM label from BotStatus."""
+    src = status.llm_last_provider or status.llm_provider or default_source
+    label = llm_display_label(src, status.llm_fallback_active)
+    model = status.llm_last_model or status.llm_model or status.ollama_model
+    state = "ok" if status.llm_ok else "error"
+    return f"LLM ({label}): {state}" + (f" ({model})" if model else "")
 
 
 def format_uptime(seconds: int) -> str:
@@ -184,14 +199,13 @@ def read_env_summary(root_dir: Path) -> dict[str, Any]:
         "env_exists": env_path.exists(),
         "has_discord_token": False,
         "has_ninerouter_api_key": False,
-        "has_gemini_api_key": False,
-        "llm_provider": "ollama",
+        "llm_provider": "ninerouter",
+        "llm_fallback": "ollama",
         "ollama_base_url": "http://127.0.0.1:11434",
         "ollama_model": "qwen3:8b",
         "ollama_keep_alive": "15m",
         "ninerouter_base_url": "http://127.0.0.1:20128/v1",
         "ninerouter_model": "",
-        "gemini_model": "gemini-3.8-flash",
         "openai_compat_model": "qwen3-8b",
         "panel_host": "127.0.0.1",
         "panel_port": 7878,
@@ -205,9 +219,12 @@ def read_env_summary(root_dir: Path) -> dict[str, Any]:
 
     summary["has_discord_token"] = bool((vals.get("DISCORD_TOKEN") or "").strip())
     summary["has_ninerouter_api_key"] = bool((vals.get("NINEROUTER_API_KEY") or "").strip())
-    summary["has_gemini_api_key"] = bool((vals.get("GEMINI_API_KEY") or "").strip())
-    if (vals.get("LLM_PROVIDER") or "").strip():
-        summary["llm_provider"] = str(vals["LLM_PROVIDER"]).strip().lower()
+    raw_prov = str(vals.get("LLM_PROVIDER") or "").strip().lower()
+    if raw_prov in ("ninerouter", "ollama", "openai_compat"):
+        summary["llm_provider"] = raw_prov
+    raw_fb = str(vals.get("LLM_FALLBACK") or "").strip().lower()
+    if raw_fb in ("ollama", "none"):
+        summary["llm_fallback"] = raw_fb
     if (vals.get("OLLAMA_BASE_URL") or "").strip():
         summary["ollama_base_url"] = str(vals["OLLAMA_BASE_URL"]).strip()
     if (vals.get("OLLAMA_MODEL") or "").strip():
@@ -218,8 +235,6 @@ def read_env_summary(root_dir: Path) -> dict[str, Any]:
         summary["ninerouter_base_url"] = str(vals["NINEROUTER_BASE_URL"]).strip()
     if (vals.get("NINEROUTER_MODEL") or "").strip():
         summary["ninerouter_model"] = str(vals["NINEROUTER_MODEL"]).strip()
-    if (vals.get("GEMINI_MODEL") or "").strip():
-        summary["gemini_model"] = str(vals["GEMINI_MODEL"]).strip()
     if (vals.get("OPENAI_MODEL") or "").strip():
         summary["openai_compat_model"] = str(vals["OPENAI_MODEL"]).strip()
     if (vals.get("PANEL_HOST") or "").strip():
@@ -235,9 +250,9 @@ def read_env_summary(root_dir: Path) -> dict[str, Any]:
 
 def read_llm_api_key(root_dir: Path, source: str) -> str:
     """Read only the requested provider API key from .env for model-list requests (never store/log)."""
-    key_name = {"ninerouter": "NINEROUTER_API_KEY", "gemini": "GEMINI_API_KEY"}.get((source or "").strip().lower())
-    if not key_name:
+    if (source or "").strip().lower() != "ninerouter":
         return ""
+    key_name = "NINEROUTER_API_KEY"
     env_path = root_dir / ".env"
     if not env_path.exists():
         return ""
@@ -491,6 +506,9 @@ class BotProcessManager:
                 llm_provider=str(data.get("llm_provider", "") or ""),
                 llm_model=llm_model,
                 ollama_model=ollama_model,
+                llm_last_provider=str(data.get("llm_last_provider", "") or ""),
+                llm_last_model=str(data.get("llm_last_model", "") or ""),
+                llm_fallback_active=bool(data.get("llm_fallback_active", False)),
             )
             self._last_status = status
             return status
@@ -511,6 +529,9 @@ class BotProcessManager:
                 llm_provider=prev.llm_provider,
                 llm_model=prev.llm_model,
                 ollama_model=prev.ollama_model,
+                llm_last_provider=prev.llm_last_provider,
+                llm_last_model=prev.llm_last_model,
+                llm_fallback_active=prev.llm_fallback_active,
             )
 
         state = STATE_STOPPING if self._stopping else default_state
@@ -563,6 +584,9 @@ class BotProcessManager:
                         llm_provider=status.llm_provider,
                         llm_model=status.llm_model,
                         ollama_model=status.ollama_model,
+                        llm_last_provider=status.llm_last_provider,
+                        llm_last_model=status.llm_last_model,
+                        llm_fallback_active=status.llm_fallback_active,
                     )
                 status = self._status_from_file(ext_pid, STATE_RUNNING, external=True)
                 if status.started is None and ext_started is not None:
@@ -578,6 +602,9 @@ class BotProcessManager:
                         llm_provider=status.llm_provider,
                         llm_model=status.llm_model,
                         ollama_model=status.ollama_model,
+                        llm_last_provider=status.llm_last_provider,
+                        llm_last_model=status.llm_last_model,
+                        llm_fallback_active=status.llm_fallback_active,
                     )
                 return status
 

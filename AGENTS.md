@@ -5,7 +5,7 @@
 
 ## Project
 - Pachinko: a Python 3.12 Discord **text + voice** companion bot ("Pachinko"), one process (`main.py`, asyncio), run by the owner on **one Windows 11 PC** (AMD RX 9070 16 GB) for **one friends' server** (~5–50 members, one voice channel at a time).
-- LLM: local **Ollama**, model from `OLLAMA_MODEL` in `.env` (currently `qwen3-8k` = qwen3:8b with `num_ctx 8192`). Small 8B model: keep prompts short and explicit. Optional fallbacks: OpenAI-compatible, Gemini.
+- LLM: **9router** (`ninerouter`, default) with automatic local **Ollama** fallback (`LLM_FALLBACK=ollama`, model from `OLLAMA_MODEL` in `.env`, currently `qwen3-8k` = qwen3:8b with `num_ctx 8192`). Small 8B model: keep prompts short and explicit. Optional provider: OpenAI-compatible.
 - Voice: py-cord (pinned commit of unmerged PR #3159 for DAVE receive) + faster-whisper on CPU + Edge/Piper TTS. Panel: FastAPI on `127.0.0.1:7878`. Data: SQLite WAL `data/pachinko.db`.
 - Map: `brain/` (prompt, runner, llm, tools, gate, triage, profile) · `heart/` (emotions, bond) · `memory/` · `voice/` + `speech/` (turn taking, STT, TTS) · `sing/` · `play/` (economy) · `discord_bot/` · `web/` · `core/` (store, bus, safety) · `profiles/default/` (persona) · `tools/lang_eval.py` · `tests/`.
 

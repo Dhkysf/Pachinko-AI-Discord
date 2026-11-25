@@ -7,47 +7,11 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import main
-from brain.llm import LLMClient
 from config import config
 from speech.stt import STTEngine
 
 
 class TestCloudClientReuse(unittest.IsolatedAsyncioTestCase):
-    async def test_gemini_client_reused_and_closed(self) -> None:
-        created: list[MagicMock] = []
-
-        def fake_client_cls(*, api_key: str) -> MagicMock:
-            inst = MagicMock()
-            inst.api_key = api_key
-            inst.aio = types.SimpleNamespace(aclose=AsyncMock())
-            inst.close = MagicMock()
-            created.append(inst)
-            return inst
-
-        fake_genai = types.ModuleType("google.genai")
-        fake_genai.Client = fake_client_cls  # type: ignore[attr-defined]
-        fake_google = types.ModuleType("google")
-        fake_google.genai = fake_genai  # type: ignore[attr-defined]
-
-        llm = LLMClient()
-        with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai}), \
-             patch.object(config, "gemini_api_key", "test-gem-key"):
-            c1 = llm._get_gemini_client()
-            c2 = llm._get_gemini_client()
-            self.assertIs(c1, c2)
-            self.assertEqual(len(created), 1)
-            await llm.close()
-            c1.aio.aclose.assert_awaited_once()
-            c1.close.assert_called_once()
-            self.assertIsNone(llm._gemini_client)
-
-    async def test_gemini_empty_key_raises_and_close_is_safe(self) -> None:
-        llm = LLMClient()
-        with patch.object(config, "gemini_api_key", ""):
-            with self.assertRaises(RuntimeError):
-                llm._get_gemini_client()
-        await llm.close()
-
     async def test_groq_client_reused_and_closed(self) -> None:
         created: list[MagicMock] = []
 

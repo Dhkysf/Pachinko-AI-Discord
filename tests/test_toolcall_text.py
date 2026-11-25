@@ -180,7 +180,8 @@ class TestNoToolsRetryAndErrors(unittest.IsolatedAsyncioTestCase):
             client._http.post = fake_post  # type: ignore[method-assign]
             dummy_tools = [{"type": "function", "function": {"name": "web_search"}}]
 
-            with patch("brain.llm.config.ollama_model", "hivemind-8k"):
+            with patch("brain.llm.config.llm_provider", "ollama"), \
+                 patch("brain.llm.config.ollama_model", "hivemind-8k"):
                 with self.assertLogs("llm", level="WARNING") as cm:
                     res1 = await client._ollama_once([{"role": "user", "content": "hi"}], tools=dummy_tools, fast_voice=False)
                 self.assertEqual(res1.text, "Halo!")

@@ -16,7 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from brain.gate import ActionGate
 from brain.profile import ProfileManager
 from brain.runner import BrainRunner
-from config import config
+from config import VALID_LLM_PROVIDERS, config
 from core.bus import EventBus
 from core.store import Store
 from core.vram import vram_guard
@@ -299,7 +299,10 @@ def create_web_app(
         if "autonomy_paused" in body:
             await gate.set_paused(body["autonomy_paused"])
         if "llm_provider" in body:
-            config.llm_provider = body["llm_provider"].strip().lower()
+            prov = body["llm_provider"].strip().lower()
+            if prov not in VALID_LLM_PROVIDERS:
+                raise HTTPException(status_code=400, detail=f"Invalid llm_provider: {prov}")
+            config.llm_provider = prov
         if "ollama_model" in body:
             config.ollama_model = body["ollama_model"].strip()
         if "tts_provider" in body:

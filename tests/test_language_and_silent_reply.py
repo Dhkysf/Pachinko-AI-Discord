@@ -232,7 +232,7 @@ class TestRunnerLanguageAndSilentReplies(unittest.IsolatedAsyncioTestCase):
                 ninerouter_api_key="k",
                 ninerouter_model="deepseek-r1",
                 llm_compact_prompt=True,
-                gemini_api_key="",
+                llm_fallback="none",
             )
             with patch("brain.llm.config", cfg):
                 r1 = await client.complete_with_tools([{"role": "user", "content": "hi"}], max_tokens_scale=1)
@@ -294,7 +294,7 @@ class TestRunnerLanguageAndSilentReplies(unittest.IsolatedAsyncioTestCase):
                 ninerouter_api_key="k",
                 ninerouter_model="deepseek-r1",
                 llm_compact_prompt=True,
-                gemini_api_key="",
+                llm_fallback="none",
             )
             runner = _make_runner(client)
             with patch("brain.llm.config", cfg), self.assertLogs("brain.runner", level="WARNING") as cm:

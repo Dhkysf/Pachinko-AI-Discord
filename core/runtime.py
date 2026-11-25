@@ -173,6 +173,9 @@ def write_status(
     llm_provider: str = "",
     llm_model: str = "",
     ollama_model: str = "",
+    llm_last_provider: str = "",
+    llm_last_model: str = "",
+    llm_fallback_active: bool = False,
 ) -> None:
     """Atomically write runtime status.json for the desktop control app."""
     try:
@@ -188,6 +191,9 @@ def write_status(
                 "llm_provider": llm_provider,
                 "llm_model": llm_model,
                 "ollama_model": ollama_model,
+                "llm_last_provider": llm_last_provider,
+                "llm_last_model": llm_last_model,
+                "llm_fallback_active": bool(llm_fallback_active),
             },
         )
     except Exception as exc:

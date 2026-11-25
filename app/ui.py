@@ -36,18 +36,19 @@ from app.process import (
     BotProcessManager,
     BotStatus,
     effective_llm_selection,
+    format_llm_status,
     format_uptime,
+    llm_display_label,
     load_settings,
     read_env_summary,
     read_panel_port,
     save_settings,
-    source_label,
     tail_log_lines,
 )
 from app.tray import TrayController, make_icon_image, status_color
 
 _ENV_LABEL = "(use .env)"
-_SOURCE_LABEL_TO_KEY = {_ENV_LABEL: "", "Ollama": "ollama", "9router": "ninerouter", "Gemini": "gemini"}
+_SOURCE_LABEL_TO_KEY = {_ENV_LABEL: "", "9router": "ninerouter", "Ollama": "ollama"}
 _SOURCE_KEY_TO_LABEL = {v: k for k, v in _SOURCE_LABEL_TO_KEY.items()}
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -122,7 +123,7 @@ class PachinkoControlApp:
         detail_row = ttk.Frame(status_frame)
         detail_row.pack(fill="x", pady=(6, 0))
         self._discord_var = tk.StringVar(value="Discord: not ready")
-        self._llm_var = tk.StringVar(value="LLM (Ollama): error")
+        self._llm_var = tk.StringVar(value="LLM (9router): error")
         self._voice_var = tk.StringVar(value="Voice sessions: 0")
         ttk.Label(detail_row, textvariable=self._discord_var).pack(side="left", padx=(0, 18))
         ttk.Label(detail_row, textvariable=self._llm_var).pack(side="left", padx=(0, 18))
@@ -209,7 +210,7 @@ class PachinkoControlApp:
             textvariable=self._var_source,
             state="readonly",
             width=12,
-            values=[_ENV_LABEL, "Ollama", "9router", "Gemini"],
+            values=[_ENV_LABEL, "9router", "Ollama"],
         )
         self._source_combo.pack(side="left", padx=(0, 10))
         self._source_combo.bind("<<ComboboxSelected>>", self._on_source_selected)
@@ -522,10 +523,13 @@ class PachinkoControlApp:
             for item in items:
                 row = ttk.Frame(body)
                 row.pack(fill="x", pady=(0, 6))
+                is_info = item.code == "ollama_fallback_down"
+                badge_text = "INFO" if is_info else ("OK" if item.ok else "PROBLEM")
+                badge_color = "#6b7280" if is_info else ("#16a34a" if item.ok else "#dc2626")
                 badge = ttk.Label(
                     row,
-                    text="OK" if item.ok else "PROBLEM",
-                    foreground="#16a34a" if item.ok else "#dc2626",
+                    text=badge_text,
+                    foreground=badge_color,
                     font=("Segoe UI", 9, "bold"),
                     width=9,
                 )
@@ -533,7 +537,7 @@ class PachinkoControlApp:
                 text_col = ttk.Frame(row)
                 text_col.pack(side="left", fill="x", expand=True)
                 ttk.Label(text_col, text=f"{item.name}: {item.detail}", wraplength=430, justify="left").pack(anchor="w")
-                if not item.ok and item.hint:
+                if (not item.ok or is_info) and item.hint:
                     ttk.Label(
                         text_col,
                         text=f"Fix: {item.hint}",
@@ -838,11 +842,10 @@ class PachinkoControlApp:
         self._uptime_var.set(f"Uptime: {format_uptime(status.uptime)}" if status.uptime > 0 else "Uptime: -")
         self._discord_var.set(f"Discord: {'ready' if status.discord_ready else 'not ready'}")
         env = read_env_summary(self.manager.root_dir)
-        active_src = status.llm_provider or self._selected_source() or env["llm_provider"]
-        src_name = source_label(active_src)
+        primary_src = status.llm_provider or self._selected_source() or env["llm_provider"]
+        src_name = llm_display_label(status.llm_last_provider or primary_src, status.llm_fallback_active)
         active_model = status.llm_model or status.ollama_model
-        llm_state = "ok" if status.llm_ok else "error"
-        self._llm_var.set(f"LLM ({src_name}): {llm_state}" + (f" ({active_model})" if active_model else ""))
+        self._llm_var.set(format_llm_status(status, default_source=primary_src))
         self._voice_var.set(f"Voice sessions: {status.voice_sessions}")
 
         self._update_buttons(status)
@@ -862,7 +865,7 @@ class PachinkoControlApp:
             run_key = (status.pid, status.started)
             if run_key != self._warmed_run_key:
                 self._warmed_run_key = run_key
-                if active_src == "ollama":
+                if primary_src == "ollama":
                     model = active_model or self.settings["model_ollama"] or env["ollama_model"]
                     threading.Thread(
                         target=warm_up_ollama,

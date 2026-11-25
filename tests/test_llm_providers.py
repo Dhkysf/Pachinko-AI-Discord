@@ -1,4 +1,4 @@
-"""Offline unit tests for 9router, per-run env overrides, tool support, Gemini tools, and health checks."""
+"""Offline unit tests for 9router, per-run env overrides, tool support, Ollama fallback, and health checks."""
 from __future__ import annotations
 
 import json
@@ -53,17 +53,32 @@ def _make_cfg(**overrides: Any) -> AppConfig:
 
 
 class TestConfigAndEnvOverride(unittest.TestCase):
+    def test_defaults_and_legacy_gemini_provider_warning(self) -> None:
+        cfg = _make_cfg()
+        self.assertEqual(cfg.llm_provider, "ninerouter")
+        self.assertEqual(cfg.llm_fallback, "ollama")
+        self.assertFalse(hasattr(cfg, "gemini_api_key"))
+
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "AIzaIgnored123", "GEMINI_MODEL": "ignored"},
+            clear=True,
+        ):
+            with self.assertLogs("config", level="WARNING") as cm:
+                cfg_legacy = AppConfig()
+        self.assertEqual(cfg_legacy.llm_provider, "ninerouter")
+        self.assertEqual(len(cm.output), 1)
+        self.assertIn("ninerouter", cm.output[0])
+
     def test_active_model_per_provider(self) -> None:
         cfg = _make_cfg(
             ollama_model="qwen3:8b",
             ninerouter_model="nr/claude-sonnet",
-            gemini_model="gemini-3.8-flash",
             openai_model="local-qwen",
         )
         for provider, expected in (
             ("ollama", "qwen3:8b"),
             ("ninerouter", "nr/claude-sonnet"),
-            ("gemini", "gemini-3.8-flash"),
             ("openai_compat", "local-qwen"),
         ):
             cfg.llm_provider = provider
@@ -134,7 +149,7 @@ class TestNineRouterAndOpenAICompat(unittest.IsolatedAsyncioTestCase):
                 ninerouter_base_url="http://127.0.0.1:20128/v1/",
                 ninerouter_api_key="nr-secret-key-123",
                 ninerouter_model="gpt-4o-mini",
-                gemini_api_key="",
+                llm_fallback="none",
             )
             with patch("brain.llm.config", cfg):
                 resp = await client.complete_with_tools([{"role": "user", "content": "hai"}], tools=None)
@@ -175,7 +190,7 @@ class TestNineRouterAndOpenAICompat(unittest.IsolatedAsyncioTestCase):
                 openai_model="qwen3-8b",
                 llm_temperature=0.7,
                 llm_compact_prompt=True,
-                gemini_api_key="",
+                llm_fallback="none",
             )
             tools = [{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}]
             msgs = [{"role": "user", "content": "halo"}]
@@ -231,7 +246,7 @@ class TestNineRouterAndOpenAICompat(unittest.IsolatedAsyncioTestCase):
                     llm_provider="ninerouter",
                     ninerouter_api_key="k",
                     ninerouter_model="no-tool-model",
-                    gemini_api_key="",
+                    llm_fallback="none",
                 )
                 dummy_tools = [{"type": "function", "function": {"name": "web_search"}}]
                 with patch("brain.llm.config", cfg):
@@ -271,7 +286,7 @@ class TestNineRouterAndOpenAICompat(unittest.IsolatedAsyncioTestCase):
                 llm_provider="ninerouter",
                 ninerouter_api_key="k",
                 ninerouter_model="m1",
-                gemini_api_key="",
+                llm_fallback="none",
             )
             with patch("brain.llm.config", cfg):
                 with self.assertRaises(httpx.HTTPStatusError):
@@ -309,7 +324,7 @@ class TestErrorsAndFallback(unittest.IsolatedAsyncioTestCase):
                     ninerouter_base_url="http://127.0.0.1:20128/v1",
                     ninerouter_api_key=secret,
                     ninerouter_model="m1",
-                    gemini_api_key="",
+                    llm_fallback="none",
                 )
                 with patch("brain.llm.config", cfg):
                     with self.assertLogs("llm", level="WARNING") as cm:
@@ -329,7 +344,7 @@ class TestErrorsAndFallback(unittest.IsolatedAsyncioTestCase):
         await client._http.aclose()
         client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
-            cfg = _make_cfg(llm_provider="ninerouter", ninerouter_api_key="k", ninerouter_model="m1", gemini_api_key="")
+            cfg = _make_cfg(llm_provider="ninerouter", ninerouter_api_key="k", ninerouter_model="m1", llm_fallback="none")
             store = types.SimpleNamespace(get_kv=AsyncMock(return_value=""))
             bus = types.SimpleNamespace(emit=AsyncMock())
             profiles = types.SimpleNamespace(current=_fake_profile())
@@ -357,92 +372,149 @@ class TestErrorsAndFallback(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
-    async def test_gemini_fallback_only_when_key_set_and_not_gemini_primary(self) -> None:
-        client = LLMClient()
-        try:
-            cfg = _make_cfg(llm_provider="ninerouter", gemini_api_key="gem-key", gemini_model="g1")
-            with patch("brain.llm.config", cfg), \
-                 patch.object(client, "_openai_once", AsyncMock(side_effect=RuntimeError("down"))), \
-                 patch.object(client, "_gemini_once", AsyncMock(return_value=types.SimpleNamespace(text="from-gem", tool_calls=[]))) as gem_mock:
-                res = await client.complete_with_tools([{"role": "user", "content": "hi"}])
-                self.assertEqual(res.text, "from-gem")
-                gem_mock.assert_awaited_once()
+    async def test_ollama_fallback_on_errors_cooldown_and_recovery(self) -> None:
+        for outcome in (
+            "connect_error",
+            "timeout",
+            httpx.Response(503, text="unavailable"),
+            httpx.Response(429, text="rate limit"),
+            httpx.Response(401, text="bad key"),
+            httpx.Response(403, text="forbidden"),
+        ):
+            now = 1000.0
+            nr_calls = 0
+            ollama_calls = 0
+            seen_ollama_msgs: list[list[dict[str, Any]]] = []
+            seen_ollama_tools: list[Any] = []
+            nr_should_fail = True
 
-            cfg.llm_provider = "gemini"
-            with patch("brain.llm.config", cfg), \
-                 patch.object(client, "_gemini_once", AsyncMock(side_effect=RuntimeError("gem-down"))) as gem_mock2:
-                with self.assertRaises(RuntimeError):
-                    await client.complete_with_tools([{"role": "user", "content": "hi"}])
-                self.assertEqual(gem_mock2.await_count, 1)
+            def handler(request: httpx.Request, out: Any = outcome) -> httpx.Response:
+                nonlocal nr_calls, ollama_calls
+                url = str(request.url)
+                body = json.loads(request.content.decode("utf-8"))
+                if url.startswith("http://127.0.0.1:20128/"):
+                    nr_calls += 1
+                    if nr_should_fail:
+                        if out == "connect_error":
+                            raise httpx.ConnectError("Connection refused", request=request)
+                        if out == "timeout":
+                            raise httpx.ReadTimeout("Timed out", request=request)
+                        return out
+                    return httpx.Response(200, json={"choices": [{"message": {"content": "from-9router"}}]})
+                ollama_calls += 1
+                seen_ollama_msgs.append(body["messages"])
+                seen_ollama_tools.append(body.get("tools"))
+                return httpx.Response(200, json={"message": {"content": "from-ollama"}})
+
+            client = LLMClient(clock=lambda: now, cooldown_sec=120.0)
+            await client._http.aclose()
+            client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            try:
+                cfg = _make_cfg(
+                    llm_provider="ninerouter",
+                    llm_fallback="ollama",
+                    ninerouter_base_url="http://127.0.0.1:20128/v1",
+                    ninerouter_api_key="nr-key",
+                    ninerouter_model="gpt-4o-mini",
+                    ollama_base_url="http://127.0.0.1:11434",
+                    ollama_model="qwen3:8b",
+                )
+                msgs = [{"role": "user", "content": "halo"}]
+                tools = [{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}]
+                with patch("brain.llm.config", cfg):
+                    with self.assertLogs("llm", level="WARNING") as cm_warn:
+                        r1 = await client.complete_with_tools(msgs, tools=tools)
+                    self.assertEqual(r1.text, "from-ollama")
+                    self.assertEqual(r1.provider, "ollama")
+                    self.assertEqual(nr_calls, 1)
+                    self.assertEqual(ollama_calls, 1)
+                    self.assertEqual(seen_ollama_msgs[0], msgs)
+                    self.assertEqual(seen_ollama_tools[0], tools)
+                    self.assertEqual(len(cm_warn.output), 1)
+                    self.assertEqual(client.status_snapshot(), ("ollama", "qwen3:8b", True))
+
+                    # Second message within 2 min goes straight to Ollama without calling 9router
+                    now += 60.0
+                    r2 = await client.complete_with_tools(msgs, tools=tools)
+                    self.assertEqual(r2.text, "from-ollama")
+                    self.assertEqual(nr_calls, 1)
+                    self.assertEqual(ollama_calls, 2)
+
+                    # After 2 min cooldown expires, 9router is tried again and logs 1 recovery info
+                    now += 61.0
+                    nr_should_fail = False
+                    with self.assertLogs("llm", level="INFO") as cm_info:
+                        r3 = await client.complete_with_tools(msgs, tools=tools)
+                    self.assertEqual(r3.text, "from-9router")
+                    self.assertEqual(nr_calls, 2)
+                    self.assertEqual(ollama_calls, 2)
+                    self.assertEqual(len(cm_info.output), 1)
+                    self.assertEqual(client.status_snapshot(), ("ninerouter", "gpt-4o-mini", False))
+            finally:
+                await client.close()
+
+    async def test_stream_text_falls_back_to_ollama_and_respects_cooldown(self) -> None:
+        now = 500.0
+        nr_calls = 0
+        ollama_calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal nr_calls, ollama_calls
+            if str(request.url).startswith("http://127.0.0.1:20128/"):
+                nr_calls += 1
+                raise httpx.ConnectError("Connection refused", request=request)
+            ollama_calls += 1
+            ndjson = json.dumps({"message": {"content": "Halo dari Ollama!"}}) + "\n"
+            return httpx.Response(200, text=ndjson)
+
+        client = LLMClient(clock=lambda: now, cooldown_sec=120.0)
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            cfg = _make_cfg(
+                llm_provider="ninerouter",
+                llm_fallback="ollama",
+                ninerouter_api_key="k",
+                ninerouter_model="m1",
+                ollama_model="qwen3:8b",
+            )
+            with patch("brain.llm.config", cfg):
+                out1 = "".join([t async for t in client.stream_text([{"role": "user", "content": "hi"}])])
+                out2 = "".join([t async for t in client.stream_text([{"role": "user", "content": "hi"}])])
+            self.assertEqual(out1, "Halo dari Ollama!")
+            self.assertEqual(out2, "Halo dari Ollama!")
+            self.assertEqual(nr_calls, 1)
+            self.assertEqual(ollama_calls, 2)
         finally:
             await client.close()
 
+    async def test_400_tools_error_does_not_trigger_ollama_fallback(self) -> None:
+        ollama_calls = 0
 
-class TestGeminiTools(unittest.IsolatedAsyncioTestCase):
-    async def test_gemini_function_calling_and_followup(self) -> None:
-        calls: list[dict[str, Any]] = []
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal ollama_calls
+            if str(request.url).startswith("http://127.0.0.1:11434/"):
+                ollama_calls += 1
+                return httpx.Response(200, json={"message": {"content": "ollama"}})
+            body = json.loads(request.content.decode("utf-8"))
+            if "tools" in body:
+                return httpx.Response(400, json={"error": "tools not supported"})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok-no-tools"}}]})
 
-        class _FakeObj:
-            def __init__(self, **kw: Any) -> None:
-                self.__dict__.update(kw)
-
-        class _FakeTypes:
-            Content = _FakeObj
-            Part = _FakeObj
-            FunctionDeclaration = _FakeObj
-            Tool = _FakeObj
-            GenerateContentConfig = _FakeObj
-
-        async def fake_generate_content(*, model: str, contents: Any, config: Any) -> Any:
-            calls.append({"model": model, "contents": contents, "config": config})
-            if len(calls) == 1:
-                fc_part = _FakeObj(text=None, function_call=_FakeObj(name="set_reminder", args={"minutes": 1, "note": "minum"}))
-                return _FakeObj(candidates=[_FakeObj(content=_FakeObj(parts=[fc_part]))], text=None)
-            txt_part = _FakeObj(text="Sip, udah aku pasang pengingatnya!", function_call=None)
-            return _FakeObj(candidates=[_FakeObj(content=_FakeObj(parts=[txt_part]))], text="Sip, udah aku pasang pengingatnya!")
-
-        fake_client = types.SimpleNamespace(
-            aio=types.SimpleNamespace(models=types.SimpleNamespace(generate_content=fake_generate_content), aclose=AsyncMock()),
-            close=MagicMock(),
-        )
-        fake_genai = types.ModuleType("google.genai")
-        fake_genai.Client = MagicMock(return_value=fake_client)  # type: ignore[attr-defined]
-        fake_genai.types = _FakeTypes  # type: ignore[attr-defined]
-        fake_google = types.ModuleType("google")
-        fake_google.genai = fake_genai  # type: ignore[attr-defined]
-
-        llm = LLMClient()
-        cfg = _make_cfg(
-            llm_provider="gemini",
-            gemini_api_key="test-gem-key",
-            gemini_model="gemini-3.8-flash",
-            gemini_fallback_models=(),
-        )
-        tool_schemas = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "set_reminder",
-                    "description": "Set reminder",
-                    "parameters": {"type": "object", "properties": {"minutes": {"type": "number"}}},
-                },
-            }
-        ]
+        client = LLMClient()
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
-            with patch.dict(sys.modules, {"google": fake_google, "google.genai": fake_genai, "google.genai.types": _FakeTypes}), \
-                 patch("brain.llm.config", cfg):
-                r1 = await llm.complete_with_tools([{"role": "user", "content": "ingetin minum 1 menit lagi"}], tools=tool_schemas)
-                self.assertEqual(r1.tool_calls, [LLMToolCall("set_reminder", {"minutes": 1, "note": "minum"})])
-                self.assertTrue(getattr(calls[0]["config"], "tools", None))
-
-                r2 = await llm.complete_with_tools(
-                    [{"role": "user", "content": "ingetin minum 1 menit lagi"}, {"role": "user", "content": "[Tool Result]: OK"}],
-                    tools=None,
+            cfg = _make_cfg(llm_provider="ninerouter", llm_fallback="ollama", ninerouter_api_key="k", ninerouter_model="m1")
+            with patch("brain.llm.config", cfg):
+                res = await client.complete_with_tools(
+                    [{"role": "user", "content": "hi"}],
+                    tools=[{"type": "function", "function": {"name": "web_search"}}],
                 )
-                self.assertEqual(r2.text, "Sip, udah aku pasang pengingatnya!")
-                self.assertIsNone(getattr(calls[1]["config"], "tools", None))
+            self.assertEqual(res.text, "ok-no-tools")
+            self.assertEqual(ollama_calls, 0)
         finally:
-            await llm.close()
+            await client.close()
 
 
 class TestHealthStatusAndSafety(unittest.IsolatedAsyncioTestCase):
@@ -480,13 +552,6 @@ class TestHealthStatusAndSafety(unittest.IsolatedAsyncioTestCase):
                 client._last_probe_ts = 0.0
                 self.assertTrue(await client.check_health(60.0))
 
-                cfg.llm_provider = "gemini"
-                client.last_ok = False
-                client._last_probe_ts = 0.0
-                self.assertFalse(await client.check_health(60.0))
-                client.last_ok = True
-                self.assertTrue(await client.check_health(60.0))
-
             self.assertEqual(
                 seen_gets,
                 [
@@ -511,11 +576,17 @@ class TestHealthStatusAndSafety(unittest.IsolatedAsyncioTestCase):
                 llm_provider="ninerouter",
                 llm_model="gpt-4o-mini",
                 ollama_model="qwen3:8b",
+                llm_last_provider="ollama",
+                llm_last_model="qwen3:8b",
+                llm_fallback_active=True,
             )
             data = json.loads(p.read_text(encoding="utf-8"))
             self.assertEqual(data["llm_provider"], "ninerouter")
             self.assertEqual(data["llm_model"], "gpt-4o-mini")
             self.assertEqual(data["ollama_model"], "qwen3:8b")
+            self.assertEqual(data["llm_last_provider"], "ollama")
+            self.assertEqual(data["llm_last_model"], "qwen3:8b")
+            self.assertTrue(data["llm_fallback_active"])
 
     def test_redact_secrets_redacts_ninerouter_api_key(self) -> None:
         out = redact_secrets("NINEROUTER_API_KEY=secret_9r_value")

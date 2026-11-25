@@ -67,6 +67,8 @@ class TestSafety(unittest.TestCase):
             self.assertNotIn(secret, out)
         self.assertEqual(out.count("[RAHASIA_DISENSOR]"), 4)
         self.assertEqual(filter_outgoing("Halo teman-teman!"), "Halo teman-teman!")
+        from core.safety import redact_secrets
+        self.assertNotIn("AIza", redact_secrets(f"GEMINI_API_KEY={aiza}"))
 
 
 if __name__ == "__main__":

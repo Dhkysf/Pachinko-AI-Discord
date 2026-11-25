@@ -103,18 +103,15 @@ def _fake_tool_result(name: str, args: dict[str, Any]) -> str:
     return "OK"
 
 
-async def _run_eval(model: str, runs: int, provider: str = "ollama") -> Path:
+async def _run_eval(model: str, runs: int, provider: str = "ninerouter") -> Path:
     config.llm_provider = provider
+    config.llm_fallback = "none"  # Never silently fall back during eval
     if provider == "ninerouter":
         config.ninerouter_model = model
     elif provider == "openai_compat":
         config.openai_model = model
-    elif provider == "gemini":
-        config.gemini_model = model
     else:
         config.ollama_model = model
-    if provider != "gemini":
-        config.gemini_api_key = ""  # Never silently fall back to cloud Gemini
 
     profile = ProfileManager(None).current  # type: ignore[arg-type]
     fake_person = {
@@ -253,16 +250,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate Pachinko Indonesian replies.")
     parser.add_argument(
         "--provider",
-        choices=("ollama", "ninerouter", "gemini", "openai_compat"),
-        default="ollama",
-        help="LLM provider (default: ollama)",
+        choices=("ninerouter", "ollama", "openai_compat"),
+        default=None,
+        help="LLM provider (default: configured LLM_PROVIDER)",
     )
     parser.add_argument("--model", default="", help="Model name (default: active model for --provider)")
     parser.add_argument("--runs", type=int, default=2, help="Number of runs per prompt (default: 2)")
     args = parser.parse_args()
-    config.llm_provider = args.provider
+    provider = args.provider or config.llm_provider
+    config.llm_provider = provider
     model = args.model or config.active_model()
-    asyncio.run(_run_eval(model, max(1, args.runs), provider=args.provider))
+    asyncio.run(_run_eval(model, max(1, args.runs), provider=provider))
 
 
 if __name__ == "__main__":

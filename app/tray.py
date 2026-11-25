@@ -17,7 +17,7 @@ from app.process import (
     STATE_STOPPING,
     BotStatus,
     format_uptime,
-    source_label,
+    llm_display_label,
 )
 
 STATUS_COLORS: dict[str, str] = {
@@ -79,12 +79,14 @@ def format_tooltip(status: BotStatus) -> str:
     label = f"{status.state} (external)" if status.external else status.state
     parts = [f"Pachinko - {label}"]
     active = status.state in (STATE_RUNNING, STATE_STARTING, STATE_STOPPING, STATE_ALREADY_RUNNING)
-    if active and (status.llm_provider or status.llm_model):
-        src = source_label(status.llm_provider) if status.llm_provider else ""
-        if src and status.llm_model:
-            parts.append(f"{src}: {status.llm_model}")
+    shown_provider = status.llm_last_provider or status.llm_provider
+    shown_model = status.llm_last_model or status.llm_model
+    if active and (shown_provider or shown_model):
+        src = llm_display_label(shown_provider, status.llm_fallback_active) if shown_provider else ""
+        if src and shown_model:
+            parts.append(f"{src}: {shown_model}")
         else:
-            parts.append(src or status.llm_model)
+            parts.append(src or shown_model)
     tip = " - ".join(parts)
     if status.state in (STATE_RUNNING, STATE_STARTING, STATE_STOPPING) and status.uptime > 0:
         tip = f"{tip} ({format_uptime(status.uptime)})"

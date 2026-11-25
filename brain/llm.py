@@ -1,20 +1,18 @@
 """Multi-Provider LLM Client with Token Streaming & Tool Calling.
 
 Supports:
-1. `ollama`        : Fully local on AMD RX 9070 16GB (`/api/chat`, `think: False` for fast voice).
-2. `ninerouter`    : Local 9router OpenAI-compatible gateway (`/v1/chat/completions`).
+1. `ninerouter`    : Local 9router OpenAI-compatible gateway (`/v1/chat/completions`, default).
+2. `ollama`        : Fully local on AMD RX 9070 16GB (`/api/chat`, `think: False`, also automatic fallback).
 3. `openai_compat` : Local LM Studio / llama.cpp / vLLM (`/v1/chat/completions`).
-4. `gemini`        : Optional / fallback cloud (`google-genai`).
 """
 from __future__ import annotations
 
-import inspect
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import httpx
 
@@ -40,26 +38,13 @@ class _OpenAIEndpoint:
     model: str
 
 
-def _to_gemini_tools(types_mod: Any, tools: list[dict[str, Any]] | None) -> list[Any]:
-    if not tools:
-        return []
-    fd_cls = getattr(types_mod, "FunctionDeclaration", None)
-    tool_cls = getattr(types_mod, "Tool", None)
-    if fd_cls is None or tool_cls is None:
-        return []
-    decls = []
-    for t in tools:
-        fn = t.get("function") if isinstance(t, dict) else None
-        if not isinstance(fn, dict) or not fn.get("name"):
-            continue
-        decls.append(
-            fd_cls(
-                name=fn["name"],
-                description=fn.get("description", ""),
-                parameters_json_schema=fn.get("parameters"),
-            )
-        )
-    return [tool_cls(function_declarations=decls)] if decls else []
+def _is_fallback_error(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TransportError, TimeoutError, OSError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        code = exc.response.status_code
+        return code in (401, 403, 429) or (500 <= code < 600)
+    return False
 
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _UNCLOSED_THINK_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
@@ -374,22 +359,111 @@ async def _filter_stream(chunks: AsyncIterator[str]) -> AsyncIterator[str]:
 
 
 class LLMClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] | None = None,
+        cooldown_sec: float = 120.0,
+    ) -> None:
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=8.0))
         self._no_tools_models: set[str] = set()
-        self._gemini_client: Any = None
-        self._gemini_api_key: str = ""
+        self._clock = clock or time.monotonic
+        self._cooldown_sec = float(cooldown_sec)
+        self._cooldown_until: float | None = None
+        self._fallback_provider: str = ""
+        self._using_fallback: bool = False
         self.last_ok: bool = False
         self.last_ok_ts: float = 0.0
         self._last_probe_ts: float = 0.0
+        self.last_provider: str = ""
+        self.last_model: str = ""
+        self.last_was_fallback: bool = False
 
-    def _mark_ok(self) -> None:
+    @staticmethod
+    def _provider_label(provider: str) -> str:
+        return "9router" if provider == "ninerouter" else provider
+
+    def _can_fallback(self, provider: str) -> bool:
+        return provider in ("ninerouter", "openai_compat") and config.llm_fallback == "ollama"
+
+    def _in_cooldown(self, provider: str) -> bool:
+        return (
+            self._can_fallback(provider)
+            and self._fallback_provider == provider
+            and self._cooldown_until is not None
+            and self._clock() < self._cooldown_until
+        )
+
+    def _describe_openai_error(self, ep: _OpenAIEndpoint, exc: Exception) -> str:
+        label = self._provider_label(ep.name)
+        if isinstance(exc, httpx.ConnectError):
+            return f"{label} is not running at {ep.base_url.rstrip('/')}"
+        if isinstance(exc, httpx.TimeoutException):
+            return f"{label} timed out"
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+            code = exc.response.status_code
+            if code in (401, 403):
+                return f"{label} API key missing or wrong"
+            if code == 429:
+                return f"{label} rate limited (HTTP 429)"
+            return f"{label} returned HTTP {code}"
+        return f"{label} failed ({redact_secrets(str(exc))})"
+
+    def _log_openai_failure(self, ep: _OpenAIEndpoint, exc: Exception) -> None:
+        msg = self._describe_openai_error(ep, exc)
+        if isinstance(exc, httpx.ConnectError) or (
+            isinstance(exc, httpx.HTTPStatusError)
+            and exc.response is not None
+            and exc.response.status_code in (401, 403)
+        ):
+            log.error("%s", msg)
+        else:
+            log.warning("%s", msg)
+
+    def _enter_cooldown(self, ep: _OpenAIEndpoint, exc: Exception) -> None:
+        already_in = self._using_fallback and self._fallback_provider == ep.name
+        self._cooldown_until = self._clock() + self._cooldown_sec
+        self._fallback_provider = ep.name
+        if not already_in:
+            log.warning(
+                "%s; falling back to Ollama for %ds.",
+                self._describe_openai_error(ep, exc),
+                int(self._cooldown_sec),
+            )
+        self._using_fallback = True
+
+    def _mark_ok(self, provider: str = "", model: str = "", *, is_fallback: bool = False) -> None:
         self.last_ok = True
         self.last_ok_ts = time.time()
+        if provider:
+            self.last_provider = provider
+            self.last_model = model
+            self.last_was_fallback = is_fallback
+            if not is_fallback and self._using_fallback and self._fallback_provider == provider:
+                log.info("%s recovered; switching back from Ollama fallback.", self._provider_label(provider))
+                self._using_fallback = False
+                self._cooldown_until = None
+                self._fallback_provider = ""
+
+    def effective_provider(self) -> str:
+        provider = config.llm_provider
+        return "ollama" if self._in_cooldown(provider) else provider
+
+    def effective_model(self) -> str:
+        return config.ollama_model if self._in_cooldown(config.llm_provider) else config.active_model()
+
+    def status_snapshot(self) -> tuple[str, str, bool]:
+        """Return (provider, model, fallback_active) for status reporting."""
+        if self._in_cooldown(config.llm_provider):
+            model = self.last_model if (self.last_was_fallback and self.last_model) else config.ollama_model
+            return "ollama", model, True
+        if self.last_provider:
+            return self.last_provider, self.last_model or config.active_model(), self.last_was_fallback
+        return config.llm_provider, config.active_model(), False
 
     def _tools_key(self, provider: str | None = None, model: str | None = None) -> str:
-        p = provider or config.llm_provider
-        m = config.active_model() if model is None else model
+        p = provider or self.effective_provider()
+        m = self.effective_model() if model is None else model
         return f"{p}:{m}"
 
     def _openai_endpoint(self, provider: str) -> _OpenAIEndpoint:
@@ -407,25 +481,12 @@ class LLMClient:
             model=config.openai_model,
         )
 
-    def _log_openai_status(self, ep: _OpenAIEndpoint, status_code: int) -> None:
-        label = "9router" if ep.name == "ninerouter" else ep.name
-        if status_code in (401, 403):
-            log.error("%s API key missing or wrong", label)
-        elif status_code == 429:
-            log.warning("%s rate limited (HTTP 429)", label)
-
-    def _log_openai_connect_error(self, ep: _OpenAIEndpoint) -> None:
-        label = "9router" if ep.name == "ninerouter" else ep.name
-        log.error("%s is not running at %s", label, ep.base_url.rstrip("/"))
-
     async def check_health(self, max_age: float = 60.0) -> bool:
         """Return recent LLM health, probing local/gateway endpoints at most once per max_age."""
         now = time.time()
         if self.last_ok and (now - self.last_ok_ts) < max_age:
             return True
-        provider = config.llm_provider
-        if provider == "gemini":
-            return self.last_ok
+        provider = self.effective_provider()
         if (now - self._last_probe_ts) >= max_age:
             self._last_probe_ts = now
             try:
@@ -449,34 +510,11 @@ class LLMClient:
     def supports_tools(self) -> bool:
         return self._tools_key() not in self._no_tools_models
 
-    def _get_gemini_client(self) -> Any:
-        if not config.gemini_api_key:
-            raise RuntimeError("GEMINI_API_KEY is empty and local Ollama is not responding.")
-        if self._gemini_client is None or self._gemini_api_key != config.gemini_api_key:
-            from google import genai
-
-            self._gemini_client = genai.Client(api_key=config.gemini_api_key)
-            self._gemini_api_key = config.gemini_api_key
-        return self._gemini_client
-
     async def close(self) -> None:
         await self._http.aclose()
-        if self._gemini_client is not None:
-            client = self._gemini_client
-            self._gemini_client = None
-            self._gemini_api_key = ""
-            aio = getattr(client, "aio", None)
-            aclose = getattr(aio, "aclose", None)
-            if callable(aclose):
-                res = aclose()
-                if inspect.isawaitable(res):
-                    await res
-            close_fn = getattr(client, "close", None)
-            if callable(close_fn):
-                close_fn()
 
     def active_provider(self) -> str:
-        return config.llm_provider
+        return self.effective_provider()
 
     async def complete_with_tools(
         self,
@@ -488,34 +526,45 @@ class LLMClient:
     ) -> LLMResponse:
         provider = config.llm_provider
         scale = max(1, int(max_tokens_scale))
-        try:
-            if provider == "ollama":
-                res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice, max_tokens_scale=scale)
-            elif provider in ("ninerouter", "openai_compat"):
-                res = await self._openai_once(
-                    messages,
-                    tools=tools,
-                    fast_voice=fast_voice,
-                    endpoint=self._openai_endpoint(provider),
-                    max_tokens_scale=scale,
-                )
-            elif provider == "gemini":
-                res = await self._gemini_once(messages, tools=tools, max_tokens_scale=scale)
-            else:
-                res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice, max_tokens_scale=scale)
-            self._mark_ok()
-            return res
-        except Exception as e:
-            log.warning("Primary provider '%s' failed (%s), checking fallback...", provider, redact_secrets(str(e)))
-            if provider != "gemini" and config.gemini_api_key:
-                log.info("Falling back to Gemini API...")
+        if provider in ("ninerouter", "openai_compat"):
+            if self._in_cooldown(provider):
                 try:
-                    res = await self._gemini_once(messages, tools=tools, max_tokens_scale=scale)
-                    self._mark_ok()
+                    res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice, max_tokens_scale=scale)
+                    self._mark_ok("ollama", res.model or config.ollama_model, is_fallback=True)
                     return res
                 except Exception:
                     self.last_ok = False
                     raise
+            ep = self._openai_endpoint(provider)
+            try:
+                res = await self._openai_once(
+                    messages,
+                    tools=tools,
+                    fast_voice=fast_voice,
+                    endpoint=ep,
+                    max_tokens_scale=scale,
+                )
+                self._mark_ok(provider, res.model or ep.model, is_fallback=False)
+                return res
+            except Exception as e:
+                if self._can_fallback(provider) and _is_fallback_error(e):
+                    self._enter_cooldown(ep, e)
+                    try:
+                        res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice, max_tokens_scale=scale)
+                        self._mark_ok("ollama", res.model or config.ollama_model, is_fallback=True)
+                        return res
+                    except Exception:
+                        self.last_ok = False
+                        raise
+                self._log_openai_failure(ep, e)
+                self.last_ok = False
+                raise
+
+        try:
+            res = await self._ollama_once(messages, tools=tools, fast_voice=fast_voice, max_tokens_scale=scale)
+            self._mark_ok("ollama", res.model or config.ollama_model, is_fallback=False)
+            return res
+        except Exception:
             self.last_ok = False
             raise
 
@@ -527,41 +576,44 @@ class LLMClient:
     ) -> AsyncIterator[str]:
         """Stream tokens one by one for real-time voice sentence responses."""
         provider = config.llm_provider
-        try:
-            if provider == "ollama":
-                async for tok in self._ollama_stream(messages, fast_voice=fast_voice):
-                    yield tok
-                self._mark_ok()
-                return
-            if provider in ("ninerouter", "openai_compat"):
-                async for tok in self._openai_stream(
-                    messages,
-                    fast_voice=fast_voice,
-                    endpoint=self._openai_endpoint(provider),
-                ):
-                    yield tok
-                self._mark_ok()
-                return
-        except Exception as e:
-            log.warning("Streaming '%s' failed (%s), trying fallback...", provider, redact_secrets(str(e)))
-            if provider != "gemini" and config.gemini_api_key:
+        if provider in ("ninerouter", "openai_compat"):
+            if self._in_cooldown(provider):
                 try:
-                    resp = await self._gemini_once(messages)
-                    self._mark_ok()
-                    if resp.text:
-                        yield resp.text
+                    async for tok in self._ollama_stream(messages, fast_voice=fast_voice):
+                        yield tok
+                    self._mark_ok("ollama", config.ollama_model, is_fallback=True)
                     return
                 except Exception:
                     self.last_ok = False
                     raise
-            self.last_ok = False
-            raise
+
+            ep = self._openai_endpoint(provider)
+            yielded = False
+            try:
+                async for tok in self._openai_stream(messages, fast_voice=fast_voice, endpoint=ep):
+                    yielded = True
+                    yield tok
+                self._mark_ok(provider, ep.model, is_fallback=False)
+                return
+            except Exception as e:
+                if not yielded and self._can_fallback(provider) and _is_fallback_error(e):
+                    self._enter_cooldown(ep, e)
+                    try:
+                        async for tok in self._ollama_stream(messages, fast_voice=fast_voice):
+                            yield tok
+                        self._mark_ok("ollama", config.ollama_model, is_fallback=True)
+                        return
+                    except Exception:
+                        self.last_ok = False
+                        raise
+                self._log_openai_failure(ep, e)
+                self.last_ok = False
+                raise
 
         try:
-            resp = await self._gemini_once(messages)
-            self._mark_ok()
-            if resp.text:
-                yield resp.text
+            async for tok in self._ollama_stream(messages, fast_voice=fast_voice):
+                yield tok
+            self._mark_ok("ollama", config.ollama_model, is_fallback=False)
         except Exception:
             self.last_ok = False
             raise
@@ -696,23 +748,14 @@ class LLMClient:
             payload["tools"] = tools
         headers = {"Authorization": f"Bearer {ep.api_key}"} if ep.api_key else {}
         url = f"{ep.base_url.rstrip('/')}/chat/completions"
-        try:
-            r = await self._http.post(url, json=payload, headers=headers)
-        except httpx.ConnectError:
-            self._log_openai_connect_error(ep)
-            raise
+        r = await self._http.post(url, json=payload, headers=headers)
         if r.status_code in (400, 422) and "tools" in payload and _TOOLS_REJECTED_RE.search(r.text):
             payload.pop("tools", None)
-            try:
-                r = await self._http.post(url, json=payload, headers=headers)
-            except httpx.ConnectError:
-                self._log_openai_connect_error(ep)
-                raise
+            r = await self._http.post(url, json=payload, headers=headers)
             if r.status_code < 400 and tools_key not in self._no_tools_models:
                 self._no_tools_models.add(tools_key)
                 log.warning("%s model '%s' rejected tools; disabling tools until restart.", ep.name, ep.model)
         if r.status_code >= 400:
-            self._log_openai_status(ep, r.status_code)
             r.raise_for_status()
         data = r.json()
         choices = data.get("choices") or []
@@ -769,120 +812,34 @@ class LLMClient:
 
         async def _raw_tokens() -> AsyncIterator[str]:
             logged_bad_json = False
-            try:
-                async with self._http.stream("POST", url, json=payload, headers=headers) as resp:
-                    if resp.status_code >= 400:
-                        self._log_openai_status(ep, resp.status_code)
-                        resp.raise_for_status()
-                    async for line in resp.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        raw = line[5:].strip()
-                        if not raw:
-                            continue
-                        if raw == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(raw)
-                        except json.JSONDecodeError:
-                            if not logged_bad_json:
-                                log.debug("Skipping invalid SSE JSON line from %s: %r", ep.name, raw[:120])
-                                logged_bad_json = True
-                            continue
-                        if not isinstance(obj, dict):
-                            continue
-                        choices = obj.get("choices")
-                        if not isinstance(choices, list) or not choices:
-                            continue
-                        choice0 = choices[0]
-                        delta = choice0.get("delta") if isinstance(choice0, dict) else None
-                        content = delta.get("content") if isinstance(delta, dict) else None
-                        if isinstance(content, str) and content:
-                            yield content
-            except httpx.ConnectError:
-                self._log_openai_connect_error(ep)
-                raise
+            async with self._http.stream("POST", url, json=payload, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw:
+                        continue
+                    if raw == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(raw)
+                    except json.JSONDecodeError:
+                        if not logged_bad_json:
+                            log.debug("Skipping invalid SSE JSON line from %s: %r", ep.name, raw[:120])
+                            logged_bad_json = True
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    choices = obj.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice0 = choices[0]
+                    delta = choice0.get("delta") if isinstance(choice0, dict) else None
+                    content = delta.get("content") if isinstance(delta, dict) else None
+                    if isinstance(content, str) and content:
+                        yield content
 
         async for tok in _filter_stream(_raw_tokens()):
             yield tok
-
-    # ---------------- Gemini Cloud / Fallback ----------------
-    async def _gemini_once(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        max_tokens_scale: int = 1,
-    ) -> LLMResponse:
-        client = self._get_gemini_client()
-        from google.genai import types
-        scale = max(1, int(max_tokens_scale))
-        sys_chunks: list[str] = []
-        contents: list[types.Content] = []
-        for m in normalize_messages(messages):
-            if m["role"] == "system":
-                sys_chunks.append(m["content"])
-            else:
-                role = "model" if m["role"] == "assistant" else "user"
-                contents.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
-
-        gemini_tools = _to_gemini_tools(types, tools)
-        for model in (config.gemini_model, *config.gemini_fallback_models):
-            if not model:
-                continue
-            try:
-                cfg_kw: dict[str, Any] = {
-                    "system_instruction": "\n\n".join(sys_chunks),
-                    **_temperature_kw(),
-                    "max_output_tokens": 600 * scale,
-                }
-                if gemini_tools and self._tools_key("gemini", model) not in self._no_tools_models:
-                    cfg_kw["tools"] = gemini_tools
-                resp = await client.aio.models.generate_content(
-                    model=model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(**cfg_kw),
-                )
-                text_parts: list[str] = []
-                tcalls: list[LLMToolCall] = []
-                has_reasoning = False
-                finish_reason: str | None = None
-                candidates = getattr(resp, "candidates", None) or []
-                if candidates:
-                    fr = getattr(candidates[0], "finish_reason", None)
-                    finish_reason = str(fr) if fr is not None else None
-                if candidates and getattr(candidates[0], "content", None):
-                    for part in getattr(candidates[0].content, "parts", None) or []:
-                        fc = getattr(part, "function_call", None)
-                        if fc is not None and getattr(fc, "name", None):
-                            args = getattr(fc, "args", None)
-                            tcalls.append(LLMToolCall(name=fc.name, arguments=dict(args) if isinstance(args, dict) else {}))
-                        elif getattr(part, "thought", False):
-                            if getattr(part, "text", None):
-                                has_reasoning = True
-                        elif getattr(part, "text", None):
-                            text_parts.append(part.text)
-                else:
-                    for fc in getattr(resp, "function_calls", None) or []:
-                        if getattr(fc, "name", None):
-                            args = getattr(fc, "args", None)
-                            tcalls.append(LLMToolCall(name=fc.name, arguments=dict(args) if isinstance(args, dict) else {}))
-                    if getattr(resp, "text", None):
-                        text_parts.append(resp.text)
-
-                raw_joined = "".join(text_parts)
-                if "<think>" in raw_joined.lower():
-                    has_reasoning = True
-                content = _strip_think(raw_joined)
-                content, text_calls = extract_tool_calls_from_text(content)
-                tcalls.extend(text_calls)
-                return LLMResponse(
-                    text=content,
-                    tool_calls=tcalls,
-                    finish_reason=finish_reason,
-                    has_reasoning=has_reasoning,
-                    provider="gemini",
-                    model=model,
-                )
-            except Exception as e:
-                log.warning("Gemini model '%s' failed: %s", model, redact_secrets(str(e)))
-        raise RuntimeError("All Gemini models failed.")

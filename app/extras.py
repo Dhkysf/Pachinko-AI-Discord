@@ -127,67 +127,6 @@ def fetch_ninerouter_models(
     return True, models, ""
 
 
-def fetch_gemini_models(
-    api_key: str,
-    *,
-    timeout: float = 5.0,
-    opener: Callable[..., Any] = urllib.request.urlopen,
-    base_url: str = "https://generativelanguage.googleapis.com/v1beta",
-) -> tuple[bool, list[str], str]:
-    """List Gemini models supporting generateContent via REST, returning short names."""
-    key = (api_key or "").strip()
-    if not key:
-        return False, [], "API key missing or wrong"
-    req = urllib.request.Request(
-        f"{base_url.rstrip('/')}/models?pageSize=1000",
-        headers={"x-goog-api-key": key},
-        method="GET",
-    )
-    try:
-        with opener(req, timeout=timeout) as resp:
-            status = getattr(resp, "status", 200)
-            if status in (401, 403):
-                return False, [], "API key missing or wrong"
-            if status != 200:
-                return False, [], f"Gemini returned HTTP {status}"
-            raw = resp.read()
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            return False, [], "API key missing or wrong"
-        if exc.code == 400:
-            try:
-                err_body = exc.read().decode("utf-8", errors="replace").lower()
-            except Exception:
-                err_body = ""
-            if "api_key_invalid" in err_body or "api key" in err_body:
-                return False, [], "API key missing or wrong"
-        return False, [], f"Gemini returned HTTP {exc.code}"
-    except (urllib.error.URLError, OSError, TimeoutError):
-        return False, [], "Gemini API not reachable"
-
-    try:
-        data = json.loads(raw.decode("utf-8", errors="replace"))
-        models: set[str] = set()
-        for m in data.get("models") or []:
-            if not isinstance(m, dict):
-                continue
-            methods = m.get("supportedGenerationMethods") or []
-            if "generateContent" not in methods:
-                continue
-            name = str(m.get("name") or "").strip()
-            if name.startswith("models/"):
-                name = name[len("models/"):]
-            if name:
-                models.add(name)
-        sorted_models = sorted(models)
-    except (ValueError, TypeError, AttributeError) as exc:
-        return False, [], f"Invalid response from Gemini ({exc})"
-
-    if not sorted_models:
-        return True, [], "No Gemini models available"
-    return True, sorted_models, ""
-
-
 def fetch_models_for_source(
     source: str,
     root_dir: Path,
@@ -196,7 +135,7 @@ def fetch_models_for_source(
     timeout: float = 5.0,
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> tuple[bool, list[str], str]:
-    """Fetch available models for one source ('ollama' | 'ninerouter' | 'gemini')."""
+    """Fetch available models for one source ('ollama' | 'ninerouter')."""
     src = (source or "").strip().lower()
     summary = env if env is not None else read_env_summary(root_dir)
     if src == "ollama":
@@ -204,9 +143,6 @@ def fetch_models_for_source(
     if src == "ninerouter":
         key = read_llm_api_key(root_dir, "ninerouter")
         return fetch_ninerouter_models(summary["ninerouter_base_url"], key, timeout=timeout, opener=opener)
-    if src == "gemini":
-        key = read_llm_api_key(root_dir, "gemini")
-        return fetch_gemini_models(key, timeout=timeout, opener=opener)
     return False, [], f"Unsupported source: {src}"
 
 
@@ -308,6 +244,7 @@ def run_preflight(
     bot_running: bool = False,
     which: Callable[[str], str | None] = shutil.which,
     fetch_models: Callable[[str], tuple[bool, list[str], str]] | None = None,
+    fetch_fallback: Callable[[str], tuple[bool, list[str], str]] | None = None,
     opener: Callable[..., Any] = urllib.request.urlopen,
     port_free: Callable[[str, int], bool] = is_port_free,
 ) -> tuple[list[CheckResult], list[str]]:
@@ -357,7 +294,7 @@ def run_preflight(
         )
 
     src = (selected_source or "").strip().lower()
-    if src in ("ollama", "ninerouter", "gemini"):
+    if src in ("ollama", "ninerouter"):
         source = src
         effective_model = selected_model.strip() or str(env.get(f"{src}_model", "") or "").strip()
     else:
@@ -451,48 +388,6 @@ def run_preflight(
                         detail=f"Reachable; model '{effective_model}' available",
                     )
                 )
-    elif source == "gemini":
-        if not env["has_gemini_api_key"]:
-            results.append(
-                CheckResult(
-                    name="Gemini",
-                    ok=False,
-                    detail="API key missing or wrong",
-                    hint="Add GEMINI_API_KEY in .env.",
-                )
-            )
-        else:
-            reachable, fetched, err = (
-                fetch_models("gemini")
-                if fetch_models is not None
-                else fetch_models_for_source("gemini", root_dir, env=env, opener=opener)
-            )
-            if not reachable:
-                results.append(
-                    CheckResult(
-                        name="Gemini",
-                        ok=False,
-                        detail=err or "Gemini API not reachable",
-                        hint="Check GEMINI_API_KEY in .env and your internet connection.",
-                    )
-                )
-            elif not effective_model or effective_model not in fetched:
-                results.append(
-                    CheckResult(
-                        name="Gemini",
-                        ok=False,
-                        detail=f"Model '{effective_model or '(unset)'}' not found in Gemini models",
-                        hint="Pick a model from the Model dropdown or update GEMINI_MODEL in .env.",
-                    )
-                )
-            else:
-                results.append(
-                    CheckResult(
-                        name="Gemini",
-                        ok=True,
-                        detail=f"Key set; model '{effective_model}' available",
-                    )
-                )
     else:
         results.append(
             CheckResult(
@@ -501,6 +396,42 @@ def run_preflight(
                 detail=f"Using {source_label(source)} from .env",
             )
         )
+
+    if source in ("ninerouter", "openai_compat") and env.get("llm_fallback", "ollama") == "ollama":
+        fb_ok, fb_models, _ = (
+            fetch_fallback(env["ollama_base_url"])
+            if fetch_fallback is not None
+            else fetch_ollama_models(env["ollama_base_url"], timeout=1.5, opener=opener)
+        )
+        fb_model = str(env.get("ollama_model", "") or "").strip()
+        if not fb_ok:
+            results.append(
+                CheckResult(
+                    name="Ollama",
+                    ok=True,
+                    detail="fallback: not running",
+                    hint="Optional: start Ollama if you want automatic local fallback.",
+                    code="ollama_fallback_down",
+                )
+            )
+        elif fb_model and not model_is_installed(fb_model, fb_models):
+            results.append(
+                CheckResult(
+                    name="Ollama",
+                    ok=True,
+                    detail=f"fallback: ok (model '{fb_model}' not installed)",
+                    code="ollama_fallback_missing_model",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    name="Ollama",
+                    ok=True,
+                    detail=f"fallback: ok ({fb_model})" if fb_model else "fallback: ok",
+                    code="ollama_fallback_ok",
+                )
+            )
 
     port = int(env["panel_port"])
     host = str(env["panel_host"])
@@ -595,7 +526,7 @@ def build_diagnostics(
     status: BotStatus,
     selected_source: str = "",
     selected_model: str = "",
-    env_source: str = "ollama",
+    env_source: str = "ninerouter",
     env_model: str = "",
     preflight: list[CheckResult],
     log_path: Path,
@@ -606,7 +537,9 @@ def build_diagnostics(
     eff_source = selected_source.strip() or env_source
     eff_model = selected_model.strip() or env_model
     running_src = status.llm_provider or "-"
-    running_model = status.llm_model or status.ollama_model or "-"
+    if status.llm_fallback_active:
+        running_src = f"{running_src} (Ollama fallback)"
+    running_model = status.llm_last_model or status.llm_model or status.ollama_model or "-"
     lines = [
         "=== Pachinko Control Diagnostics ===",
         f"Bot state: {status.state} (external={status.external}, pid={status.pid}, uptime={status.uptime}s)",

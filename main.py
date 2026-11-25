@@ -16,7 +16,7 @@ from brain.profile import ProfileManager
 from brain.runner import BrainRunner
 from brain.tools import ToolBox
 from brain.triage import TriageEngine
-from config import DATA_DIR, config
+from config import DATA_DIR, config, pop_startup_warnings
 from core.bus import EventBus
 from core.runtime import (
     EXIT_ALREADY_RUNNING,
@@ -147,6 +147,9 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
             llm_provider=config.llm_provider,
             llm_model=config.active_model(),
             ollama_model=config.ollama_model,
+            llm_last_provider=config.llm_provider,
+            llm_last_model=config.active_model(),
+            llm_fallback_active=False,
         )
 
         migrate_legacy_db(config.db_path, DATA_DIR)
@@ -170,7 +173,12 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
 
         tools = ToolBox(memory, gate, song_enqueue_cb=singing.enqueue)
         llm = LLMClient()
-        log.info("Brain LLM: provider=%s model=%s", config.llm_provider, config.active_model() or "(unset)")
+        log.info(
+            "Brain LLM: provider=%s model=%s fallback=%s",
+            config.llm_provider,
+            config.active_model() or "(unset)",
+            config.llm_fallback,
+        )
         triage = TriageEngine()
         brain = BrainRunner(
             store=store,
@@ -222,6 +230,9 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
                 discord_ready = bool(active_bot and getattr(active_bot, "is_ready", lambda: False)())
                 voice_sessions = len(getattr(active_bot, "voice_sessions", None) or {})
                 llm_ok = await llm.check_health(60.0) if llm is not None else False
+                last_prov, last_mod, fb_active = (
+                    llm.status_snapshot() if llm is not None else (config.llm_provider, config.active_model(), False)
+                )
                 state = "running" if (discord_ready or not config.discord_token) else "starting"
                 write_status(
                     status_path,
@@ -233,6 +244,9 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
                     llm_provider=config.llm_provider,
                     llm_model=config.active_model(),
                     ollama_model=config.ollama_model,
+                    llm_last_provider=last_prov,
+                    llm_last_model=last_mod,
+                    llm_fallback_active=fb_active,
                 )
                 await asyncio.sleep(10.0)
 
@@ -303,6 +317,9 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
             await asyncio.gather(*pending, return_exceptions=True)
 
         try:
+            last_prov, last_mod, fb_active = (
+                llm.status_snapshot() if llm is not None else (config.llm_provider, config.active_model(), False)
+            )
             write_status(
                 status_path,
                 state="stopping",
@@ -313,6 +330,9 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
                 llm_provider=config.llm_provider,
                 llm_model=config.active_model(),
                 ollama_model=config.ollama_model,
+                llm_last_provider=last_prov,
+                llm_last_model=last_mod,
+                llm_fallback_active=fb_active,
             )
         except Exception:
             pass
@@ -332,6 +352,8 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
 
 def main() -> int:
     setup_logging(DATA_DIR / "logs")
+    for w in pop_startup_warnings():
+        log.warning("%s", w)
     run_dir = DATA_DIR / "run"
     lock_path = run_dir / "bot.lock"
     started = int(time.time())

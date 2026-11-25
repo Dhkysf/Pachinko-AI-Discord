@@ -144,7 +144,6 @@ class TestPanelSecurity(unittest.TestCase):
                 ("ollama", config.ollama_model),
                 ("ninerouter", config.ninerouter_model),
                 ("openai_compat", config.openai_model),
-                ("gemini", config.gemini_model),
             ):
                 config.llm_provider = provider
                 res = client.get("/api/status")

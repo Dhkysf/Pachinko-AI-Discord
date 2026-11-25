@@ -18,6 +18,47 @@ MODELS_DIR = ROOT_DIR / "models"
 PROFILES_DIR = ROOT_DIR / "profiles"
 
 
+_startup_warnings: list[str] = []
+
+
+def _warn_config(msg: str, *args: object) -> None:
+    formatted = msg % args if args else msg
+    if logging.getLogger().handlers or log.handlers:
+        log.warning("%s", formatted)
+    else:
+        _startup_warnings.append(formatted)
+
+
+def pop_startup_warnings() -> list[str]:
+    warnings = list(_startup_warnings)
+    _startup_warnings.clear()
+    return warnings
+
+
+VALID_LLM_PROVIDERS: tuple[str, ...] = ("ninerouter", "ollama", "openai_compat")
+VALID_LLM_FALLBACKS: tuple[str, ...] = ("ollama", "none")
+
+
+def _llm_provider() -> str:
+    raw = os.getenv("LLM_PROVIDER", "").strip().lower()
+    if not raw:
+        return "ninerouter"
+    if raw not in VALID_LLM_PROVIDERS:
+        _warn_config("Unsupported LLM_PROVIDER=%r; using 'ninerouter'.", raw)
+        return "ninerouter"
+    return raw
+
+
+def _llm_fallback() -> str:
+    raw = os.getenv("LLM_FALLBACK", "").strip().lower()
+    if not raw:
+        return "ollama"
+    if raw not in VALID_LLM_FALLBACKS:
+        _warn_config("Unsupported LLM_FALLBACK=%r; using 'ollama'.", raw)
+        return "ollama"
+    return raw
+
+
 def _bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "y", "on")
 
@@ -68,9 +109,11 @@ class AppConfig:
         default_factory=lambda: Path(os.getenv("DB_PATH", "").strip() or str(DATA_DIR / "pachinko.db"))
     )
 
-    # --- LLM (Default: Local via Ollama on RX 9070 16GB, with optional 9router/Gemini/OpenAI) ---
-    # Options: "ollama" | "ninerouter" | "gemini" | "openai_compat"
-    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "ollama").strip().lower())
+    # --- LLM (Default: 9router, with local Ollama automatic fallback) ---
+    # Options: "ninerouter" | "ollama" | "openai_compat"
+    llm_provider: str = field(default_factory=_llm_provider)
+    # Automatic fallback when primary fails: "ollama" (default) | "none"
+    llm_fallback: str = field(default_factory=_llm_fallback)
     ollama_base_url: str = field(default_factory=lambda: os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip())
     ollama_model: str = field(default_factory=lambda: os.getenv("OLLAMA_MODEL", "qwen3:8b").strip())
     ollama_keep_alive: str = field(default_factory=lambda: os.getenv("OLLAMA_KEEP_ALIVE", "15m").strip())
@@ -95,13 +138,6 @@ class AppConfig:
     openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1").strip())
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", "lm-studio").strip())
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "qwen3-8b").strip())
-
-    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", "").strip())
-    # check the current model list at https://ai.google.dev/gemini-api/docs/models
-    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip())
-    gemini_fallback_models: tuple[str, ...] = field(
-        default_factory=lambda: _csv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite")
-    )
 
     # --- STT / ASR (Default: Local Faster-Whisper, optional Groq) ---
     # Options: "local_whisper" | "groq"
@@ -166,8 +202,6 @@ class AppConfig:
             return self.ninerouter_model
         if self.llm_provider == "openai_compat":
             return self.openai_model
-        if self.llm_provider == "gemini":
-            return self.gemini_model
         return self.ollama_model
 
 

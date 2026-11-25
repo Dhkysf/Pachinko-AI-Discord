@@ -17,10 +17,9 @@ faster-whisper>=1.2.1,<2
 piper-tts>=1.8.0,<2
 edge-tts>=7.3.1,<8
 
-# Tools, Karaoke Singing, & Cloud Fallback Opsional
+# Tools, Karaoke Singing, & Cloud STT Opsional
 yt-dlp>=2026.11.23
 ddgs>=9.16.1,<10
-google-genai>=3.6.1,<4
 groq>=1.7.0,<2
 
 # Desktop Control App (System Tray)
