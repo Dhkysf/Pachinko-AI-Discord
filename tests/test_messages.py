@@ -132,6 +132,7 @@ class TestAssembleMessages(unittest.TestCase):
         self.assertNotIn("energy=", all_text)
         self.assertIn("hubungan: teman ngobrol", all_text)
         self.assertIn("mood: lagi seneng", all_text)
+        self.assertIn("belum bisa melihat gambar, GIF, atau stiker", msgs[0]["content"])
         self.assertIn(
             "Jawab sebagai Pachinko pakai bahasa Indonesia santai, 1-3 kalimat, nyambung sama pesan terakhir. Kalau nggak ngerti slang-nya, tanya balik.",
             msgs[-1]["content"],

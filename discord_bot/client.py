@@ -6,6 +6,7 @@ py-cord slash command parameter type introspection always reads the real Python 
 import asyncio
 import io
 import logging
+import re
 import time
 
 import discord
@@ -33,6 +34,52 @@ GUILDS = [config.guild_id] if config.guild_id else None
 _ADMIN_ONLY_MSG = "Command ini cuma buat admin server."
 _GUILD_ONLY_MSG = "Command ini cuma bisa dipakai di server."
 _GUILD_ONLY = None if GUILDS else {discord.InteractionContextType.guild}
+
+_GIF_URL_RE = re.compile(
+    r"https?://(?:(?:[\w-]+\.)?(?:tenor\.com|giphy\.com)/\S+|\S+\.gif(?:\?\S*)?(?:#\S*)?)",
+    re.IGNORECASE,
+)
+_IMG_URL_RE = re.compile(
+    r"https?://\S+\.(?:png|jpe?g|webp)(?:\?\S*)?(?:#\S*)?",
+    re.IGNORECASE,
+)
+
+
+def format_message_text(message) -> str:
+    """Build LLM-ready text from message content, replacing media URLs/attachments with Indonesian markers."""
+    text = (getattr(message, "content", None) or "").strip()
+    if text:
+        text = _GIF_URL_RE.sub("[kirim GIF]", text)
+        text = _IMG_URL_RE.sub("[kirim gambar]", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+    markers: list[str] = []
+    for att in getattr(message, "attachments", None) or ():
+        fname = (getattr(att, "filename", None) or "").strip()
+        ctype = (getattr(att, "content_type", None) or "").lower()
+        low_name = fname.lower()
+        if ctype == "image/gif" or low_name.endswith(".gif"):
+            markers.append("[kirim GIF]")
+        elif ctype.startswith("image/") or low_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".avif")):
+            markers.append(f"[kirim gambar: {fname}]" if fname else "[kirim gambar]")
+        elif ctype.startswith("video/") or low_name.endswith((".mp4", ".mov", ".webm", ".mkv")):
+            markers.append(f"[kirim video: {fname}]" if fname else "[kirim video]")
+        else:
+            markers.append(f"[kirim file: {fname}]" if fname else "[kirim file]")
+
+    for st in getattr(message, "stickers", None) or ():
+        sname = (getattr(st, "name", None) or "").strip()
+        markers.append(f"[kirim stiker: {sname}]" if sname else "[kirim stiker]")
+
+    for emb in getattr(message, "embeds", None) or ():
+        etype = (getattr(emb, "type", None) or "").lower()
+        if etype == "gifv" and "[kirim GIF]" not in text and "[kirim GIF]" not in markers:
+            markers.append("[kirim GIF]")
+        elif etype == "image" and "[kirim gambar" not in text and not any(m.startswith("[kirim gambar") for m in markers):
+            markers.append("[kirim gambar]")
+
+    parts = [p for p in (text, *markers) if p]
+    return " ".join(parts).strip()
 
 
 async def _is_reply_to_bot(message, bot_user) -> bool:
@@ -212,7 +259,11 @@ def build_discord_bot(
     # ---------------- Text Channel Listener & Triage ----------------
     @bot.event
     async def on_message(message: discord.Message):
-        if message.author.bot or not message.content.strip():
+        if message.author.bot:
+            return
+        raw_content = (message.content or "").strip()
+        user_text = format_message_text(message)
+        if not user_text:
             return
 
         room_id = str(message.channel.id)
@@ -220,16 +271,17 @@ def build_discord_bot(
         uname = message.author.display_name
 
         # 1. Check if answering an active Trivia mini-game
-        trivia_win = await economy.check_trivia_answer(room_id, uid, uname, message.content)
-        if trivia_win:
-            await message.reply(
-                fit_discord(
-                    f"🎉 **Benar, {trivia_win['winner']}!** Kamu dapat **+{trivia_win['prize']} koin** "
-                    f"(Saldo: **{trivia_win['balance']} koin**) & Bond naik!"
-                ),
-                mention_author=False,
-            )
-            return
+        if raw_content:
+            trivia_win = await economy.check_trivia_answer(room_id, uid, uname, message.content)
+            if trivia_win:
+                await message.reply(
+                    fit_discord(
+                        f"🎉 **Benar, {trivia_win['winner']}!** Kamu dapat **+{trivia_win['prize']} koin** "
+                        f"(Saldo: **{trivia_win['balance']} koin**) & Bond naik!"
+                    ),
+                    mention_author=False,
+                )
+                return
 
         # 2. Deterministic triage (mention / called by name / chime in per channel mode)
         prof = profiles.current
@@ -240,7 +292,7 @@ def build_discord_bot(
 
         decision = triage.decide_text(
             room_id=room_id,
-            text=message.content,
+            text=user_text if raw_content else "",
             mode=mode,
             profile=prof,
             mentioned=mentioned,
@@ -257,7 +309,7 @@ def build_discord_bot(
                 room_id=room_id,
                 user_id=uid,
                 user_name=uname,
-                user_text=message.content,
+                user_text=user_text,
                 wake_reason=decision.reason,
             )
         if not res.silent and res.text and res.text.strip():

@@ -38,13 +38,97 @@ class _OpenAIEndpoint:
     model: str
 
 
+class _BadLLMResponseError(ValueError):
+    def __init__(self, message: str, *, status_code: int = 200, body: str = "") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+
+
 def _is_fallback_error(exc: Exception) -> bool:
-    if isinstance(exc, (httpx.TransportError, TimeoutError, OSError)):
+    if isinstance(exc, (httpx.TransportError, TimeoutError, OSError, _BadLLMResponseError, json.JSONDecodeError)):
         return True
     if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
         code = exc.response.status_code
-        return code in (401, 403, 429) or (500 <= code < 600)
+        return code in (401, 403, 404, 410, 429) or (500 <= code < 600)
     return False
+
+
+def _redact_body(body: str, api_key: str) -> str:
+    if not body:
+        return ""
+    snippet = body[:4000]
+    if api_key:
+        snippet = snippet.replace(api_key, "[REDACTED]")
+    snippet = redact_secrets(snippet)
+    return " ".join(snippet.split())[:200]
+
+
+def _parse_openai_sse_body(raw_text: str) -> dict[str, Any] | None:
+    """Join non-streamed SSE `data: {...}` lines into one OpenAI chat completion dict."""
+    if "data:" not in raw_text:
+        return None
+    parts: list[str] = []
+    tool_calls_by_idx: dict[int, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    has_reasoning = False
+    saw_choice = False
+
+    for line in raw_text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        raw = line[5:].strip()
+        if not raw:
+            continue
+        if raw == "[DONE]":
+            break
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        choices = obj.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            continue
+        saw_choice = True
+        c0 = choices[0]
+        if c0.get("finish_reason") is not None:
+            finish_reason = c0.get("finish_reason")
+        delta = c0.get("delta") if isinstance(c0.get("delta"), dict) else c0.get("message")
+        if not isinstance(delta, dict):
+            continue
+        if delta.get("reasoning") or delta.get("reasoning_content") or delta.get("thinking"):
+            has_reasoning = True
+        content = delta.get("content")
+        if isinstance(content, str) and content:
+            parts.append(content)
+        for tc in delta.get("tool_calls") or []:
+            if not isinstance(tc, dict):
+                continue
+            idx = tc.get("index", 0)
+            if not isinstance(idx, int):
+                idx = 0
+            entry = tool_calls_by_idx.setdefault(idx, {"function": {"name": "", "arguments": ""}})
+            fn = tc.get("function")
+            if isinstance(fn, dict):
+                if isinstance(fn.get("name"), str):
+                    entry["function"]["name"] += fn["name"]
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    if isinstance(entry["function"]["arguments"], str):
+                        entry["function"]["arguments"] += args
+                elif isinstance(args, dict):
+                    entry["function"]["arguments"] = args
+
+    if not saw_choice:
+        return None
+    msg: dict[str, Any] = {"content": "".join(parts)}
+    if has_reasoning:
+        msg["reasoning"] = True
+    if tool_calls_by_idx:
+        msg["tool_calls"] = [tool_calls_by_idx[k] for k in sorted(tool_calls_by_idx)]
+    return {"choices": [{"message": msg, "finish_reason": finish_reason}]}
 
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _UNCLOSED_THINK_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
@@ -396,18 +480,28 @@ class LLMClient:
 
     def _describe_openai_error(self, ep: _OpenAIEndpoint, exc: Exception) -> str:
         label = self._provider_label(ep.name)
+        meta = f"model={ep.model}"
         if isinstance(exc, httpx.ConnectError):
-            return f"{label} is not running at {ep.base_url.rstrip('/')}"
+            return f"{label} is not running at {ep.base_url.rstrip('/')} ({meta})"
         if isinstance(exc, httpx.TimeoutException):
-            return f"{label} timed out"
+            return f"{label} timed out ({meta})"
         if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
             code = exc.response.status_code
+            try:
+                body = _redact_body(exc.response.text, ep.api_key)
+            except Exception:
+                body = ""
+            tail = f" ({meta}, status={code}" + (f", body={body!r}" if body else "") + ")"
             if code in (401, 403):
-                return f"{label} API key missing or wrong"
+                return f"{label} API key missing or wrong{tail}"
             if code == 429:
-                return f"{label} rate limited (HTTP 429)"
-            return f"{label} returned HTTP {code}"
-        return f"{label} failed ({redact_secrets(str(exc))})"
+                return f"{label} rate limited (HTTP 429){tail}"
+            return f"{label} returned HTTP {code}{tail}"
+        if isinstance(exc, _BadLLMResponseError):
+            body = _redact_body(exc.body, ep.api_key)
+            tail = f" ({meta}, status={exc.status_code}" + (f", body={body!r}" if body else "") + ")"
+            return f"{label} returned unparseable response{tail}"
+        return f"{label} failed ({meta}: {redact_secrets(str(exc))})"
 
     def _log_openai_failure(self, ep: _OpenAIEndpoint, exc: Exception) -> None:
         msg = self._describe_openai_error(ep, exc)
@@ -757,10 +851,21 @@ class LLMClient:
                 log.warning("%s model '%s' rejected tools; disabling tools until restart.", ep.name, ep.model)
         if r.status_code >= 400:
             r.raise_for_status()
-        data = r.json()
-        choices = data.get("choices") or []
-        choice0 = choices[0] if choices and isinstance(choices[0], dict) else {}
-        choice = choice0.get("message") if isinstance(choice0.get("message"), dict) else {}
+        try:
+            data = r.json()
+        except ValueError:
+            data = _parse_openai_sse_body(r.text)
+            if data is None:
+                raise _BadLLMResponseError("invalid JSON response", status_code=r.status_code, body=r.text)
+        if not isinstance(data, dict):
+            raise _BadLLMResponseError("non-object JSON response", status_code=r.status_code, body=r.text)
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise _BadLLMResponseError("missing choices", status_code=r.status_code, body=r.text)
+        choice0 = choices[0]
+        choice = choice0.get("message")
+        if not isinstance(choice, dict):
+            raise _BadLLMResponseError("missing choice message", status_code=r.status_code, body=r.text)
         raw_content = choice.get("content") or ""
         has_reasoning = bool(
             choice.get("reasoning")
@@ -814,6 +919,7 @@ class LLMClient:
             logged_bad_json = False
             async with self._http.stream("POST", url, json=payload, headers=headers) as resp:
                 if resp.status_code >= 400:
+                    await resp.aread()
                     resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if not line.startswith("data:"):

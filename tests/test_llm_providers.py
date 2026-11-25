@@ -516,6 +516,96 @@ class TestErrorsAndFallback(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_404_410_and_bad_200_fall_back_to_ollama_with_redacted_warning(self) -> None:
+        secret = "super-secret-9r-key-xyz"
+        cases = (
+            httpx.Response(410, text=f"model gone for {secret}"),
+            httpx.Response(404, text=f"not found for {secret}"),
+            httpx.Response(200, text=f"not json at all {secret}"),
+            httpx.Response(200, json={"error": f"missing choices {secret}"}),
+        )
+        for bad_resp in cases:
+            now = 1000.0
+            nr_calls = 0
+            ollama_calls = 0
+
+            def handler(request: httpx.Request, resp: httpx.Response = bad_resp) -> httpx.Response:
+                nonlocal nr_calls, ollama_calls
+                if str(request.url).startswith("http://127.0.0.1:20128/"):
+                    nr_calls += 1
+                    return resp
+                ollama_calls += 1
+                return httpx.Response(200, json={"message": {"content": "from-ollama"}})
+
+            client = LLMClient(clock=lambda: now, cooldown_sec=120.0)
+            await client._http.aclose()
+            client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            try:
+                cfg = _make_cfg(
+                    llm_provider="ninerouter",
+                    llm_fallback="ollama",
+                    ninerouter_base_url="http://127.0.0.1:20128/v1",
+                    ninerouter_api_key=secret,
+                    ninerouter_model="gpt-4o-mini",
+                    ollama_model="qwen3:8b",
+                )
+                with patch("brain.llm.config", cfg):
+                    with self.assertLogs("llm", level="WARNING") as cm:
+                        r1 = await client.complete_with_tools([{"role": "user", "content": "hi"}])
+                    self.assertEqual(r1.text, "from-ollama")
+                    self.assertEqual(nr_calls, 1)
+                    self.assertEqual(ollama_calls, 1)
+                    self.assertEqual(len(cm.output), 1)
+                    warn = cm.output[0]
+                    self.assertIn("9router", warn)
+                    self.assertIn("gpt-4o-mini", warn)
+                    self.assertIn(str(bad_resp.status_code), warn)
+                    self.assertNotIn(secret, warn)
+
+                    # Cooldown active: second call skips 9router
+                    now += 30.0
+                    r2 = await client.complete_with_tools([{"role": "user", "content": "hi"}])
+                    self.assertEqual(r2.text, "from-ollama")
+                    self.assertEqual(nr_calls, 1)
+                    self.assertEqual(ollama_calls, 2)
+            finally:
+                await client.close()
+
+    async def test_non_stream_200_sse_body_parsed_without_fallback(self) -> None:
+        ollama_calls = 0
+        sse_body = (
+            f'data: {json.dumps({"choices": [{"delta": {"content": "Halo "}}]})}\n'
+            f'data: {json.dumps({"choices": [{"delta": {"content": "bro!", "tool_calls": [{"index": 0, "function": {"name": "web_search", "arguments": "{\"query\":"}}]}}]})}\n'
+            f'data: {json.dumps({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "\"cuaca\"}"}}]}, "finish_reason": "tool_calls"}]})}\n'
+            "data: [DONE]\n"
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal ollama_calls
+            if str(request.url).startswith("http://127.0.0.1:11434/"):
+                ollama_calls += 1
+                return httpx.Response(200, json={"message": {"content": "ollama"}})
+            return httpx.Response(200, text=sse_body, headers={"content-type": "text/event-stream"})
+
+        client = LLMClient()
+        await client._http.aclose()
+        client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            cfg = _make_cfg(
+                llm_provider="ninerouter",
+                llm_fallback="ollama",
+                ninerouter_api_key="k",
+                ninerouter_model="m1",
+            )
+            with patch("brain.llm.config", cfg):
+                res = await client.complete_with_tools([{"role": "user", "content": "hi"}])
+            self.assertEqual(res.text, "Halo bro!")
+            self.assertEqual(res.tool_calls, [LLMToolCall(name="web_search", arguments={"query": "cuaca"})])
+            self.assertEqual(res.finish_reason, "tool_calls")
+            self.assertEqual(ollama_calls, 0)
+        finally:
+            await client.close()
+
 
 class TestHealthStatusAndSafety(unittest.IsolatedAsyncioTestCase):
     async def test_check_health_per_provider(self) -> None:

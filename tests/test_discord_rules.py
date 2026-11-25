@@ -307,6 +307,125 @@ class TestDiscordRules(unittest.IsolatedAsyncioTestCase):
             any(e["topic"] == "voice.left" and e["payload"].get("reason") == "channel_empty" for e in bus.recent())
         )
 
+    def test_format_message_text_media_markers(self):
+        tenor_msg = SimpleNamespace(
+            content="https://tenor.com/view/cat-123",
+            attachments=[],
+            stickers=[],
+            embeds=[SimpleNamespace(type="gifv")],
+        )
+        self.assertEqual(client_mod.format_message_text(tenor_msg), "[kirim GIF]")
+
+        giphy_msg = SimpleNamespace(
+            content="https://giphy.com/gifs/funny-abc",
+            attachments=[],
+            stickers=[],
+            embeds=[],
+        )
+        self.assertEqual(client_mod.format_message_text(giphy_msg), "[kirim GIF]")
+
+        img_msg = SimpleNamespace(
+            content="lihat ini",
+            attachments=[SimpleNamespace(filename="x.png", content_type="image/png")],
+            stickers=[],
+            embeds=[],
+        )
+        self.assertEqual(client_mod.format_message_text(img_msg), "lihat ini [kirim gambar: x.png]")
+
+        sticker_msg = SimpleNamespace(
+            content="",
+            attachments=[],
+            stickers=[SimpleNamespace(name="kaget")],
+            embeds=[],
+        )
+        self.assertEqual(client_mod.format_message_text(sticker_msg), "[kirim stiker: kaget]")
+
+    async def test_on_message_attachment_only_reply_and_non_mention(self):
+        from brain.triage import TriageEngine
+        from brain.profile import CharacterProfile
+
+        prof = CharacterProfile(
+            profile_id="test",
+            display_name="Pachinko",
+            nicknames=["pachinko"],
+            wake_aliases={},
+            language="id",
+            interests=[],
+            temperament="tsundere",
+            half_life_mins=25.0,
+            default_channel_mode="normal",
+            filler_phrases=[],
+            backchannel_words=set(),
+            identity_md="",
+            style_md="",
+            examples_md="",
+            lore_entries=[],
+            kaomoji={},
+        )
+        brain = SimpleNamespace(
+            run_text_turn=AsyncMock(return_value=SimpleNamespace(silent=False, text="Lucu!"))
+        )
+        store = SimpleNamespace(get_channel_mode=AsyncMock(return_value="normal"), set_channel_mode=AsyncMock())
+        heart = SimpleNamespace(get_person=AsyncMock(return_value={"opt_out_approach": 0}))
+        economy = SimpleNamespace(check_trivia_answer=AsyncMock(return_value=None))
+        bus = EventBus()
+
+        bot = client_mod.build_discord_bot(
+            store=store,
+            bus=bus,
+            profiles=SimpleNamespace(current=prof, reload=AsyncMock()),
+            heart=heart,
+            memory=SimpleNamespace(clear_room_transcript=AsyncMock()),
+            triage=TriageEngine(),
+            gate=SimpleNamespace(paused=False),
+            brain=brain,
+            stt=SimpleNamespace(),
+            tts=SimpleNamespace(synthesize_pcm=AsyncMock()),
+            singing=SimpleNamespace(bind_voice_lookup=MagicMock(), snapshot=MagicMock(), skip_current=MagicMock()),
+            economy=economy,
+        )
+        bot._connection.user = SimpleNamespace(id=999)
+
+        class _Typing:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+        ch = SimpleNamespace(id=100, typing=lambda: _Typing())
+        reply_msg = SimpleNamespace(
+            author=SimpleNamespace(id=42, bot=False, display_name="Budi"),
+            channel=ch,
+            content="",
+            mentions=[],
+            reference=SimpleNamespace(resolved=SimpleNamespace(author=SimpleNamespace(id=999)), message_id=1),
+            attachments=[SimpleNamespace(filename="x.png", content_type="image/png")],
+            stickers=[],
+            embeds=[],
+            reply=AsyncMock(),
+        )
+        await bot.on_message(reply_msg)
+        brain.run_text_turn.assert_awaited_once()
+        self.assertEqual(brain.run_text_turn.call_args.kwargs["user_text"], "[kirim gambar: x.png]")
+        reply_msg.reply.assert_awaited_once()
+
+        # Attachment-only message NOT mentioning/replying to Pachinko should not wake
+        brain.run_text_turn.reset_mock()
+        ambient_msg = SimpleNamespace(
+            author=SimpleNamespace(id=42, bot=False, display_name="Budi"),
+            channel=ch,
+            content="",
+            mentions=[],
+            reference=None,
+            attachments=[SimpleNamespace(filename="x.png", content_type="image/png")],
+            stickers=[],
+            embeds=[],
+            reply=AsyncMock(),
+        )
+        await bot.on_message(ambient_msg)
+        brain.run_text_turn.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()
