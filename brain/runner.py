@@ -270,6 +270,7 @@ class BrainRunner:
         user_name: str,
         user_text: str,
         wake_reason: str = "direct_mention",
+        username: str = "",
     ) -> TurnResult:
         async with self._lock_for(room_id):
             messages, register = await self._prepare_turn(
@@ -292,7 +293,12 @@ class BrainRunner:
                         called_tools.add(tc.name)
                         await self.bus.emit("brain.tool_call", tool=tc.name, args=tc.arguments, user=user_name)
                         out = await self.tools.execute(
-                            tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
+                            tc.name,
+                            tc.arguments,
+                            room_id=room_id,
+                            user_id=user_id,
+                            user_name=user_name,
+                            username=username,
                         )
                         messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
                     resp = await self.llm.complete_with_tools(messages, tools=None, fast_voice=False)
@@ -371,6 +377,7 @@ class BrainRunner:
         user_name: str,
         user_text: str,
         wake_reason: str = "voice_utterance",
+        username: str = "",
     ) -> AsyncIterator[tuple[str, str, list[str]]]:
         """Yield `(spoken_sentence, emotion, aside_urls)` as soon as a sentence finishes streaming from the LLM."""
         async with self._lock_for(room_id):
@@ -406,7 +413,12 @@ class BrainRunner:
                         called_tools.add(tc.name)
                         await self.bus.emit("brain.tool_call", tool=tc.name, args=tc.arguments, user=user_name)
                         out = await self.tools.execute(
-                            tc.name, tc.arguments, room_id=room_id, user_id=user_id, user_name=user_name
+                            tc.name,
+                            tc.arguments,
+                            room_id=room_id,
+                            user_id=user_id,
+                            user_name=user_name,
+                            username=username,
                         )
                         messages.append({"role": "user", "content": f"[Tool Result `{tc.name}`]:\n{out}"})
                 elif first.text and first.text.strip():

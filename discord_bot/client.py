@@ -311,6 +311,7 @@ def build_discord_bot(
                 user_name=uname,
                 user_text=user_text,
                 wake_reason=decision.reason,
+                username=getattr(message.author, "name", "") or "",
             )
         if not res.silent and res.text and res.text.strip():
             await message.reply(fit_discord(res.text), mention_author=False)

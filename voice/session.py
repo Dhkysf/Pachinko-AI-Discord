@@ -294,7 +294,12 @@ class NaturalVoiceSession:
         self._spoken_so_far.clear()
 
         task = asyncio.create_task(
-            self._speak_streaming_turn(str(user.id), speaker_name, text)
+            self._speak_streaming_turn(
+                str(user.id),
+                speaker_name,
+                text,
+                username=getattr(user, "name", "") or "",
+            )
         )
         task.add_done_callback(self._on_turn_done)
         self._active_turn_task = task
@@ -341,7 +346,9 @@ class NaturalVoiceSession:
             heard_content=heard_content if interrupted else None,
         )
 
-    async def _speak_streaming_turn(self, user_id: str, speaker_name: str, user_text: str) -> None:
+    async def _speak_streaming_turn(
+        self, user_id: str, speaker_name: str, user_text: str, *, username: str = ""
+    ) -> None:
         prof = self.profiles.current
         audio_q: asyncio.Queue[tuple[str, str, asyncio.Task[bytes]] | None] = asyncio.Queue()
         first_sentence_ready = asyncio.Event()
@@ -373,6 +380,7 @@ class NaturalVoiceSession:
                     user_id=user_id,
                     user_name=speaker_name,
                     user_text=user_text,
+                    username=username,
                 ):
                     if self._barge_triggered.is_set():
                         break

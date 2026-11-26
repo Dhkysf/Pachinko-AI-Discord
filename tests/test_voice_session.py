@@ -83,6 +83,7 @@ class FakeBrain:
         user_name: str,
         user_text: str,
         wake_reason: str = "voice_utterance",
+        username: str = "",
     ):
         self.calls.append(user_text)
         items = self.turns.get(

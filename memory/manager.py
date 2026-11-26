@@ -223,7 +223,13 @@ class MemoryManager:
 
     async def list_all_notes(self, limit: int = 80) -> list[dict[str, Any]]:
         cur = await self.store.conn.execute(
-            "SELECT * FROM notebook WHERE active = 1 ORDER BY updated_at DESC LIMIT ?", (limit,)
+            "SELECT n.*, NULLIF(trim(hp.display_name), '') AS display_name "
+            "FROM notebook n "
+            "LEFT JOIN heart_person hp "
+            "  ON substr(n.doc_key, 1, 7) = 'person:' AND hp.user_id = substr(n.doc_key, 8) "
+            "WHERE n.active = 1 "
+            "ORDER BY n.updated_at DESC LIMIT ?",
+            (limit,),
         )
         return [dict(r) for r in await cur.fetchall()]
 

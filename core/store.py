@@ -12,8 +12,15 @@ from typing import Any
 
 import aiosqlite
 
+from app.extras import backup_database
+
 LEGACY_DB_NAME = "miyoria.db"
+PERSON_TOPIC_MIGRATION_KEY = "migration.person_topic_notes.v1"
 _log = logging.getLogger("core.store")
+
+
+def normalize_person_name(value: str | None) -> str:
+    return (value or "").strip().lstrip("@").strip().lower()
 
 
 def migrate_legacy_db(db_path: Path, default_dir: Path) -> bool:
@@ -263,3 +270,85 @@ class Store:
             "ON CONFLICT(channel_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at",
             (str(channel_id), mode, time.time()),
         )
+
+
+async def migrate_person_topic_notes(
+    store: Store, *, backups_dir: Path | None = None
+) -> dict[str, int] | None:
+    """One-time migration moving unambiguous topic:<person> notes to person:<user_id>."""
+    if await store.get_kv(PERSON_TOPIC_MIGRATION_KEY):
+        return None
+
+    if backups_dir is not None and store.db_path.exists():
+        await asyncio.to_thread(backup_database, store.db_path, backups_dir)
+
+    moved = 0
+    duplicates = 0
+    left = 0
+    moved_names: set[str] = set()
+    dup_names: set[str] = set()
+    left_names: set[str] = set()
+
+    async with store.write_tx() as conn:
+        cur = await conn.execute("SELECT user_id, display_name, nickname FROM heart_person")
+        name_to_uids: dict[str, set[str]] = {}
+        for row in await cur.fetchall():
+            uid = str(row["user_id"])
+            for raw_name in (row["display_name"], row["nickname"]):
+                norm = normalize_person_name(raw_name)
+                if norm:
+                    name_to_uids.setdefault(norm, set()).add(uid)
+
+        cur = await conn.execute(
+            "SELECT doc_key, fact FROM notebook WHERE active = 1 AND substr(doc_key, 1, 7) = 'person:'"
+        )
+        existing_facts: dict[str, set[str]] = {}
+        for row in await cur.fetchall():
+            existing_facts.setdefault(str(row["doc_key"]), set()).add(str(row["fact"]).strip().lower())
+
+        cur = await conn.execute(
+            "SELECT line_id, doc_key, fact FROM notebook "
+            "WHERE active = 1 AND substr(doc_key, 1, 6) = 'topic:' "
+            "ORDER BY updated_at DESC, line_id DESC"
+        )
+        for row in await cur.fetchall():
+            topic_name = str(row["doc_key"])[6:]
+            norm = normalize_person_name(topic_name)
+            uids = name_to_uids.get(norm, set())
+            if len(uids) == 1:
+                person_key = f"person:{next(iter(uids))}"
+                fact_key = str(row["fact"]).strip().lower()
+                facts = existing_facts.setdefault(person_key, set())
+                if fact_key in facts:
+                    await conn.execute("UPDATE notebook SET active = 0 WHERE line_id = ?", (row["line_id"],))
+                    duplicates += 1
+                    dup_names.add(topic_name)
+                else:
+                    await conn.execute(
+                        "UPDATE notebook SET doc_key = ? WHERE line_id = ?",
+                        (person_key, row["line_id"]),
+                    )
+                    facts.add(fact_key)
+                    moved += 1
+                    moved_names.add(topic_name)
+            else:
+                left += 1
+                left_names.add(topic_name)
+
+        summary = {"moved": moved, "duplicates": duplicates, "left_as_topic": left, "ts": time.time()}
+        await conn.execute(
+            "INSERT INTO kv_settings (key, value_json, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            (PERSON_TOPIC_MIGRATION_KEY, json.dumps(summary, ensure_ascii=False), time.time()),
+        )
+
+    _log.info(
+        "Migrated person topic notes: moved=%d (%s), duplicates=%d (%s), left_as_topic=%d (%s)",
+        moved,
+        ", ".join(sorted(moved_names)) or "-",
+        duplicates,
+        ", ".join(sorted(dup_names)) or "-",
+        left,
+        ", ".join(sorted(left_names)) or "-",
+    )
+    return {"moved": moved, "duplicates": duplicates, "left_as_topic": left}

@@ -29,7 +29,7 @@ from core.runtime import (
     watch_stop_request,
     write_status,
 )
-from core.store import Store, migrate_legacy_db
+from core.store import Store, migrate_legacy_db, migrate_person_topic_notes
 from discord_bot.client import build_discord_bot
 from heart.engine import HeartEngine
 from memory.manager import MemoryManager
@@ -155,6 +155,7 @@ async def run_all(run_dir: Path | None = None, started: int | None = None) -> No
         migrate_legacy_db(config.db_path, DATA_DIR)
         store = Store(config.db_path)
         await store.init()
+        await migrate_person_topic_notes(store, backups_dir=DATA_DIR / "backups")
 
         bus = EventBus()
 

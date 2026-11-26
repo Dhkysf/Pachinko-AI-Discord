@@ -14,6 +14,7 @@ import httpx
 from brain.gate import ActionGate
 from config import config
 from core.safety import data_block, redact_secrets
+from core.store import normalize_person_name
 from memory.manager import MemoryManager
 
 log = logging.getLogger("brain.tools")
@@ -48,7 +49,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "Short lasting fact in Indonesian, third person, e.g. 'Suka kopi susu gula aren'",
                     },
-                    "target": {"type": "string", "description": "'user' for the speaker, or a topic name"},
+                    "target": {
+                        "type": "string",
+                        "description": "'user' for the speaker, the person's name for someone else, or a topic (game, band, place)",
+                    },
                 },
                 "required": ["fact"],
             },
@@ -84,6 +88,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 _ALLOWED_TOOLS: frozenset[str] = frozenset(t["function"]["name"] for t in TOOL_SCHEMAS)
+_SELF_TARGETS: frozenset[str] = frozenset({"", "user", "orang", "aku", "saya", "gue"})
 
 _NOTE_EVENT_LOG_RE = re.compile(
     r"\b(?:asked|said|bertanya|nanya|bilang|menyapa|baru\s+kenal)\b",
@@ -119,6 +124,42 @@ class ToolBox:
         self.song_enqueue_cb = song_enqueue_cb
         self._http_transport = http_transport
 
+    async def _resolve_note_target(
+        self,
+        raw_target: Any,
+        *,
+        user_id: str,
+        user_name: str,
+        username: str = "",
+    ) -> tuple[str, str, str]:
+        """Resolve remember_note target to (doc_key, memory_uid, memory_label)."""
+        cleaned = normalize_person_name("" if raw_target is None else str(raw_target))
+        uid_str = str(user_id)
+        if cleaned in _SELF_TARGETS:
+            return f"person:{uid_str}", uid_str, user_name
+
+        matches: dict[str, str] = {}
+        if cleaned in (normalize_person_name(user_name), normalize_person_name(username)):
+            matches[uid_str] = user_name
+
+        store = getattr(self.memory, "store", None)
+        if store is not None:
+            cur = await store.conn.execute("SELECT user_id, display_name, nickname FROM heart_person")
+            for row in await cur.fetchall():
+                if cleaned in (
+                    normalize_person_name(row["display_name"]),
+                    normalize_person_name(row["nickname"]),
+                ):
+                    row_uid = str(row["user_id"])
+                    label = user_name if row_uid == uid_str else str(row["display_name"] or user_name)
+                    matches.setdefault(row_uid, label)
+
+        if len(matches) == 1:
+            resolved_uid, resolved_name = next(iter(matches.items()))
+            return f"person:{resolved_uid}", resolved_uid, resolved_name
+
+        return f"topic:{cleaned[:24]}", uid_str, user_name
+
     async def execute(
         self,
         name: str,
@@ -127,6 +168,7 @@ class ToolBox:
         room_id: str,
         user_id: str,
         user_name: str,
+        username: str = "",
     ) -> str:
         if name not in _ALLOWED_TOOLS:
             log.warning("Rejected unadvertised tool call: %r (user=%s)", name, user_name)
@@ -156,10 +198,14 @@ class ToolBox:
             if reject:
                 log.info("Rejected remember_note (%s) for user=%s: %r", reject, user_name, fact)
                 return f"Skipped note: {reject}."
-            target = str(args.get("target", "user")).strip().lower()
-            doc_key = f"person:{user_id}" if target in ("user", "orang", "") else f"topic:{target[:24]}"
+            doc_key, mem_uid, mem_label = await self._resolve_note_target(
+                args.get("target", "user"),
+                user_id=str(user_id),
+                user_name=user_name,
+                username=username,
+            )
             await self.memory.upsert_note(doc_key, fact, evidence=f"From chat with {user_name}")
-            await self.memory.remember(f"{user_name}: {fact}", scope=f"person:{user_id}", subject_id=str(user_id), importance=0.8)
+            await self.memory.remember(f"{mem_label}: {fact}", scope=f"person:{mem_uid}", subject_id=mem_uid, importance=0.8)
             return f"Saved to notebook ({doc_key}): {fact}"
         if name == "set_reminder":
             raw_mins = args.get("minutes", 5)

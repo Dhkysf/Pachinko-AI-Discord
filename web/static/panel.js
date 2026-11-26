@@ -207,8 +207,10 @@ async function loadMemory() {
   $('#notebook-list').innerHTML = notebook.length
     ? notebook
         .map(
-          (n) =>
-            `<label class="event-item mem-row"><input type="checkbox" class="mem-chk" data-id="${esc(n.line_id)}"><span class="event-topic">${esc(n.doc_key)}</span><span class="event-body">${esc(n.fact)}</span></label>`
+          (n) => {
+            const label = n.display_name ? `${n.doc_key} (${n.display_name})` : n.doc_key;
+            return `<label class="event-item mem-row"><input type="checkbox" class="mem-chk" data-id="${esc(n.line_id)}"><span class="event-topic">${esc(label)}</span><span class="event-body">${esc(n.fact)}</span></label>`;
+          }
         )
         .join('')
     : '<div style="color:var(--text-muted)">No notes in Living Notebook yet.</div>';
