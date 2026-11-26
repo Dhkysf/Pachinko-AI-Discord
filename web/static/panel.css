@@ -135,8 +135,10 @@ body {
 /* Main Workspace */
 .workspace {
   padding: 28px 36px;
-  max-width: 1280px;
+  max-width: 1680px;
   width: 100%;
+  margin-inline: auto;
+  min-width: 0;
 }
 
 .top-bar {
@@ -350,12 +352,19 @@ textarea:focus-visible {
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  height: 330px;
+  height: max(330px, calc(100vh - 380px));
   overflow-y: auto;
   padding: 10px 12px;
   font-family: var(--font-mono);
   font-size: 0.78rem;
 }
+
+/* Lists grow with the window; the px value is the old fixed height (floor). */
+.list-tall { height: max(410px, calc(100vh - 280px)); }
+.list-short { height: max(170px, calc(100vh - 290px)); }
+/* Column whose last list fills the space left under a form. */
+.fill-col { display: flex; flex-direction: column; }
+.fill-col > .list-fill { flex: 1 1 0; height: auto; min-height: 220px; }
 
 .event-item {
   padding: 5px 0;
@@ -450,7 +459,7 @@ textarea:focus-visible {
   background: var(--bg-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  height: 240px;
+  height: max(240px, calc(100vh - 560px));
   overflow-y: auto;
   padding: 12px;
   margin-bottom: 10px;
@@ -500,4 +509,9 @@ textarea:focus-visible {
   .workspace {
     padding: 20px 16px;
   }
+  .event-log { height: 330px; }
+  .chat-box { height: 240px; }
+  .list-tall { height: 410px; }
+  .list-short { height: 170px; }
+  .fill-col > .list-fill { flex: none; height: 220px; }
 }

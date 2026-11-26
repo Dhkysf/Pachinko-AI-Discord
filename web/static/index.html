@@ -143,7 +143,7 @@
       <!-- TAB 4: MEMORY -->
       <section id="tab-memory" class="tab-panel">
         <div class="grid-2">
-          <div class="panel-box">
+          <div class="panel-box fill-col">
             <h2>Add Manual Memory Note</h2>
             <label class="field-label" for="inp-mem-doc">Target Document</label>
             <input type="text" id="inp-mem-doc" value="self" placeholder="self / topic:music / person:12345">
@@ -158,7 +158,7 @@
               <label class="check-label"><input type="checkbox" id="chk-memories-all" disabled> Select all</label>
               <button id="btn-delete-memories" class="btn btn-danger" disabled>Delete selected (0)</button>
             </div>
-            <div id="memories-list" class="event-log" style="height:220px;"></div>
+            <div id="memories-list" class="event-log list-fill"></div>
           </div>
 
           <div class="panel-box">
@@ -167,7 +167,7 @@
               <label class="check-label"><input type="checkbox" id="chk-notebook-all" disabled> Select all</label>
               <button id="btn-delete-notebook" class="btn btn-danger" disabled>Delete selected (0)</button>
             </div>
-            <div id="notebook-list" class="event-log" style="height:410px;"></div>
+            <div id="notebook-list" class="event-log list-tall"></div>
           </div>
         </div>
       </section>
@@ -209,7 +209,7 @@
               <button id="btn-song-add" class="btn btn-primary">Enqueue</button>
               <button id="btn-song-skip" class="btn btn-danger">Skip</button>
             </div>
-            <div id="sing-queue-box" class="event-log" style="height:170px;"></div>
+            <div id="sing-queue-box" class="event-log list-short"></div>
           </div>
         </div>
       </section>
