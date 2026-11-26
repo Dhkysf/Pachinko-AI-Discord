@@ -13,7 +13,14 @@ from fastapi.testclient import TestClient
 from brain.tools import ToolBox
 from config import config
 from core.bus import EventBus
-from core.store import PERSON_TOPIC_MIGRATION_KEY, Store, migrate_person_topic_notes
+from core.store import (
+    FACT_DEDUPE_MIGRATION_KEY,
+    PERSON_TOPIC_MIGRATION_KEY,
+    Store,
+    fact_key,
+    migrate_fact_duplicates,
+    migrate_person_topic_notes,
+)
 from memory.manager import VEC_DIM, MemoryManager, _cosine, _quote_fts_term, local_embed
 from web.server import create_web_app
 
@@ -229,7 +236,7 @@ class TestMemoryManager(unittest.IsolatedAsyncioTestCase):
         recalled_person = await self.mem.recall("kopi susu gula aren", scopes=("global", "person:u1"))
         self.assertFalse(any(r["content"] == "Budi: Suka kopi susu gula aren" for r in recalled_person))
         recalled_topic = await self.mem.recall("lagu anime malam", scopes=("global", "person:u1"))
-        self.assertFalse(any(r["content"] == "Budi: Suka lagu anime malam" for r in recalled_topic))
+        self.assertFalse(any(r["content"] == "Budi — Suka lagu anime malam" for r in recalled_topic))
 
     async def test_remember_note_resolves_person_targets_and_keeps_topics(self) -> None:
         toolbox = ToolBox(self.mem, types.SimpleNamespace(check=AsyncMock(return_value=(True, "ok"))))  # type: ignore[arg-type]
@@ -374,6 +381,162 @@ class TestMemoryManager(unittest.IsolatedAsyncioTestCase):
         res2 = await migrate_person_topic_notes(self.store, backups_dir=backups_dir)
         self.assertIsNone(res2)
         self.assertEqual(len(list(backups_dir.glob("pachinko-*.db"))), 1)
+
+    async def test_auto_capture_and_remember_note_save_one_fact_in_any_order(self) -> None:
+        toolbox = ToolBox(self.mem, types.SimpleNamespace(check=AsyncMock(return_value=(True, "ok"))))  # type: ignore[arg-type]
+        uid = "957075726648111175"
+
+        for order in ("auto_first", "tool_first"):
+            with self.subTest(order=order):
+                await self.store.write("DELETE FROM notebook")
+                await self.store.write("DELETE FROM memories")
+
+                if order == "auto_first":
+                    await self.mem.auto_capture_user_facts(uid, "Narenee", "panggil aku Orenne")
+                    await toolbox.execute(
+                        "remember_note",
+                        {"fact": "Minta dipanggil Orenne", "target": "user"},
+                        room_id="r1",
+                        user_id=uid,
+                        user_name="Narenee",
+                    )
+                else:
+                    await toolbox.execute(
+                        "remember_note",
+                        {"fact": "Minta dipanggil Orenne", "target": "user"},
+                        room_id="r1",
+                        user_id=uid,
+                        user_name="Narenee",
+                    )
+                    await self.mem.auto_capture_user_facts(uid, "Narenee", "panggil aku Orenne")
+
+                notes = await self.mem.get_notes(f"person:{uid}")
+                self.assertEqual(len(notes), 1)
+                cur = await self.store.conn.execute(
+                    "SELECT content FROM memories WHERE scope = ?", (f"person:{uid}",)
+                )
+                mems = await cur.fetchall()
+                self.assertEqual(len(mems), 1)
+
+                self.assertEqual(await self.mem.delete_notes([notes[0]["line_id"]]), 1)
+                cur = await self.store.conn.execute(
+                    "SELECT content FROM memories WHERE scope = ?", (f"person:{uid}",)
+                )
+                self.assertEqual(await cur.fetchall(), [])
+
+        await self.mem.auto_capture_user_facts(uid, "Narenee", "panggil aku Orenne")
+        await toolbox.execute(
+            "remember_note",
+            {"fact": "Minta dipanggil Orenne", "target": "user"},
+            room_id="r1",
+            user_id=uid,
+            user_name="Narenee",
+        )
+        await toolbox.execute(
+            "remember_note",
+            {"fact": "Suka kopi susu gula aren", "target": "user"},
+            room_id="r1",
+            user_id=uid,
+            user_name="Narenee",
+        )
+        self.assertEqual(len(await self.mem.get_notes(f"person:{uid}")), 2)
+        cur = await self.store.conn.execute(
+            "SELECT content FROM memories WHERE scope = ?", (f"person:{uid}",)
+        )
+        self.assertEqual(len(await cur.fetchall()), 2)
+
+    async def test_remember_skips_same_fact_within_30_days(self) -> None:
+        self.assertEqual(
+            fact_key("Narenee: Minta dipanggil Orenne"),
+            fact_key("Narenee — Minta dipanggil: Orenne"),
+        )
+        id1 = await self.mem.remember("Narenee: Suka kopi", scope="person:1")
+        id2 = await self.mem.remember("Narenee — suka kopi!", scope="person:1")
+        self.assertEqual(id1, id2)
+
+        cur = await self.store.conn.execute("SELECT id FROM memories WHERE scope = 'person:1'")
+        self.assertEqual(len(await cur.fetchall()), 1)
+
+        await self.mem.remember("Narenee — suka kopi!", scope="person:2")
+        cur2 = await self.store.conn.execute("SELECT id FROM memories WHERE scope = 'person:2'")
+        self.assertEqual(len(await cur2.fetchall()), 1)
+
+        await self.store.write(
+            "UPDATE memories SET created_at = created_at - ? WHERE id = ?",
+            (31 * 86400, id1),
+        )
+        id3 = await self.mem.remember("Narenee — suka kopi!", scope="person:1")
+        self.assertGreater(id3, id1)
+        cur = await self.store.conn.execute("SELECT id FROM memories WHERE scope = 'person:1'")
+        self.assertEqual(len(await cur.fetchall()), 2)
+
+    async def test_migrate_fact_duplicates_keeps_newest_and_is_idempotent(self) -> None:
+        backups_dir = Path(self._tmp.name) / "backups"
+        uid = "957075726648111175"
+        person_key = f"person:{uid}"
+
+        await self.store.write(
+            "INSERT INTO notebook (doc_key, fact, evidence, active, updated_at) VALUES (?, ?, ?, 1, ?)",
+            (person_key, "Minta dipanggil: Orenne", "chat", 10.0),
+        )
+        await self.store.write(
+            "INSERT INTO notebook (doc_key, fact, evidence, active, updated_at) VALUES (?, ?, ?, 1, ?)",
+            (person_key, "Minta dipanggil Orenne", "chat", 11.0),
+        )
+        await self.store.write(
+            "INSERT INTO notebook (doc_key, fact, evidence, active, updated_at) VALUES (?, ?, ?, 1, ?)",
+            (person_key, "Suka kopi", "chat", 5.0),
+        )
+        await self.store.write(
+            "INSERT INTO notebook (doc_key, fact, evidence, active, updated_at) VALUES (?, ?, ?, 1, ?)",
+            ("topic:anime", "Minta dipanggil Orenne", "chat", 3.0),
+        )
+
+        await self.store.write(
+            "INSERT INTO memories (scope, subject_id, content, importance, vec_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (person_key, uid, "Narenee — Minta dipanggil: Orenne", 0.75, "[]", 10.0),
+        )
+        await self.store.write(
+            "INSERT INTO memories (scope, subject_id, content, importance, vec_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (person_key, uid, "Narenee: Minta dipanggil Orenne", 0.8, "[]", 11.0),
+        )
+        await self.store.write(
+            "INSERT INTO memories (scope, subject_id, content, importance, vec_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (person_key, uid, "Narenee: Suka kopi", 0.8, "[]", 5.0),
+        )
+        await self.store.write(
+            "INSERT INTO memories (scope, subject_id, content, importance, vec_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("person:other", "other", "Narenee: Minta dipanggil Orenne", 0.8, "[]", 12.0),
+        )
+
+        with self.assertLogs("core.store", level="INFO") as logs:
+            res = await migrate_fact_duplicates(self.store, backups_dir=backups_dir)
+
+        self.assertEqual(res, {"notes_deactivated": 1, "memories_deleted": 1})
+        self.assertEqual(len(list(backups_dir.glob("pachinko-*.db"))), 1)
+        self.assertNotIn("Orenne", "\n".join(logs.output))
+
+        person_notes = await self.mem.get_notes(person_key, limit=10)
+        self.assertEqual([n["fact"] for n in person_notes], ["Minta dipanggil Orenne", "Suka kopi"])
+        self.assertEqual(len(await self.mem.get_notes("topic:anime", limit=10)), 1)
+
+        cur = await self.store.conn.execute("SELECT content FROM memories WHERE scope = ?", (person_key,))
+        self.assertEqual(
+            {r["content"] for r in await cur.fetchall()},
+            {"Narenee: Minta dipanggil Orenne", "Narenee: Suka kopi"},
+        )
+        cur_other = await self.store.conn.execute("SELECT content FROM memories WHERE scope = 'person:other'")
+        self.assertEqual(len(await cur_other.fetchall()), 1)
+        self.assertIsNotNone(await self.store.get_kv(FACT_DEDUPE_MIGRATION_KEY))
+
+        res2 = await migrate_fact_duplicates(self.store, backups_dir=backups_dir)
+        self.assertIsNone(res2)
+        self.assertEqual(len(list(backups_dir.glob("pachinko-*.db"))), 1)
+
+        orenne_note_id = next(n["line_id"] for n in person_notes if n["fact"] == "Minta dipanggil Orenne")
+        self.assertEqual(await self.mem.delete_notes([orenne_note_id]), 1)
+        cur = await self.store.conn.execute("SELECT content FROM memories WHERE scope = ?", (person_key,))
+        self.assertEqual([r["content"] for r in await cur.fetchall()], ["Narenee: Suka kopi"])
 
     async def test_api_memory_includes_person_display_name(self) -> None:
         orig_token, orig_host, orig_port = config.panel_token, config.panel_host, config.panel_port

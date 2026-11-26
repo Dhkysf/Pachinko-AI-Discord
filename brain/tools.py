@@ -15,7 +15,7 @@ from brain.gate import ActionGate
 from config import config
 from core.safety import data_block, redact_secrets
 from core.store import normalize_person_name
-from memory.manager import MemoryManager
+from memory.manager import MemoryManager, note_memory_text
 
 log = logging.getLogger("brain.tools")
 
@@ -205,7 +205,12 @@ class ToolBox:
                 username=username,
             )
             await self.memory.upsert_note(doc_key, fact, evidence=f"From chat with {user_name}")
-            await self.memory.remember(f"{mem_label}: {fact}", scope=f"person:{mem_uid}", subject_id=mem_uid, importance=0.8)
+            await self.memory.remember(
+                note_memory_text(mem_label, fact),
+                scope=f"person:{mem_uid}",
+                subject_id=mem_uid,
+                importance=0.8,
+            )
             return f"Saved to notebook ({doc_key}): {fact}"
         if name == "set_reminder":
             raw_mins = args.get("minutes", 5)

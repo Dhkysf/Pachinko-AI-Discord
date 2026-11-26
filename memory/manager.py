@@ -9,9 +9,14 @@ import time
 from typing import Any
 
 from core.bus import EventBus
-from core.store import Store
+from core.store import Store, fact_key
 
 VEC_DIM = 128
+
+
+def note_memory_text(name: str, fact: str) -> str:
+    """Episodic text for a notebook fact; delete_notes also matches the legacy '<name>: <fact>' form."""
+    return f"{name} — {fact}"
 
 
 def local_embed(text: str) -> list[float]:
@@ -123,13 +128,23 @@ class MemoryManager:
         clean = content.strip()
         if not clean:
             return 0
+        key = fact_key(clean)
         vec = local_embed(clean)
-        cur = await self.store.write(
-            "INSERT INTO memories (scope, subject_id, content, importance, vec_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (scope, str(subject_id), clean, max(0.1, min(1.0, importance)), json.dumps(vec), time.time()),
-        )
-        return int(cur.lastrowid)
+        now = time.time()
+        async with self.store.write_tx() as conn:
+            cur = await conn.execute(
+                "SELECT id, content FROM memories WHERE scope = ? AND created_at >= ?",
+                (scope, now - 30 * 86400),
+            )
+            for row in await cur.fetchall():
+                if fact_key(row["content"]) == key:
+                    return int(row["id"])
+            cur = await conn.execute(
+                "INSERT INTO memories (scope, subject_id, content, importance, vec_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (scope, str(subject_id), clean, max(0.1, min(1.0, importance)), json.dumps(vec), now),
+            )
+            return int(cur.lastrowid)
 
     async def recall(
         self,
@@ -197,14 +212,15 @@ class MemoryManager:
         if not clean:
             return 0
         async with self.store.write_tx() as conn:
-            # Avoid exact duplicates
+            # Avoid duplicates by normalized fact_key
+            key = fact_key(clean)
             cur = await conn.execute(
-                "SELECT line_id FROM notebook WHERE doc_key = ? AND active = 1 AND lower(fact) = lower(?)",
-                (doc_key, clean),
+                "SELECT line_id, fact FROM notebook WHERE doc_key = ? AND active = 1",
+                (doc_key,),
             )
-            existing = await cur.fetchone()
-            if existing:
-                return int(existing["line_id"])
+            for existing in await cur.fetchall():
+                if fact_key(existing["fact"]) == key:
+                    return int(existing["line_id"])
 
             cur = await conn.execute(
                 "INSERT INTO notebook (doc_key, fact, evidence, active, updated_at) VALUES (?, ?, ?, 1, ?)",
@@ -264,11 +280,11 @@ class MemoryManager:
                         "DELETE FROM memories "
                         "WHERE (scope = ? AND (content = ? OR substr(content, -length(?)) = ? OR (length(content) > length(?) AND substr(content, -length(?)) = ?))) "
                         "OR (scope = 'global' AND (content = ? OR (length(content) > length(?) AND substr(content, -length(?)) = ?))) "
-                        "OR (? = 1 AND substr(scope, 1, 7) = 'person:' AND length(content) > length(?) AND substr(content, -length(?)) = ?)",
+                        "OR (? = 1 AND substr(scope, 1, 7) = 'person:' AND length(content) > length(?) AND (substr(content, -length(?)) = ? OR substr(content, -length(?)) = ?))",
                         (
                             doc_key, fact, dash_suffix, dash_suffix, colon_suffix, colon_suffix, colon_suffix,
                             fact, colon_suffix, colon_suffix, colon_suffix,
-                            any_person, colon_suffix, colon_suffix, colon_suffix,
+                            any_person, colon_suffix, colon_suffix, colon_suffix, dash_suffix, dash_suffix,
                         ),
                     )
         if deleted:
@@ -292,7 +308,7 @@ class MemoryManager:
                 fact = tmpl.format(m.group(1).strip())
                 await self.upsert_note(f"person:{user_id}", fact, evidence=f"{user_name}: {text[:120]}")
                 await self.remember(
-                    f"{user_name} — {fact}",
+                    note_memory_text(user_name, fact),
                     scope=f"person:{user_id}",
                     subject_id=str(user_id),
                     importance=0.75,

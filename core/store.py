@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
@@ -16,11 +17,18 @@ from app.extras import backup_database
 
 LEGACY_DB_NAME = "miyoria.db"
 PERSON_TOPIC_MIGRATION_KEY = "migration.person_topic_notes.v1"
+FACT_DEDUPE_MIGRATION_KEY = "migration.fact_dedupe.v1"
 _log = logging.getLogger("core.store")
+_FACT_PUNCT_RE = re.compile(r"[:,.!?\-—]")
 
 
 def normalize_person_name(value: str | None) -> str:
     return (value or "").strip().lstrip("@").strip().lower()
+
+
+def fact_key(text: str | None) -> str:
+    """Dedupe key: same fact regardless of case, punctuation (: , . ! ? - —) and spacing."""
+    return " ".join(_FACT_PUNCT_RE.sub(" ", (text or "").lower()).split())
 
 
 def migrate_legacy_db(db_path: Path, default_dir: Path) -> bool:
@@ -352,3 +360,58 @@ async def migrate_person_topic_notes(
         ", ".join(sorted(left_names)) or "-",
     )
     return {"moved": moved, "duplicates": duplicates, "left_as_topic": left}
+
+
+async def migrate_fact_duplicates(
+    store: Store, *, backups_dir: Path | None = None
+) -> dict[str, int] | None:
+    """One-time migration deactivating duplicate active notes and deleting duplicate memories."""
+    if await store.get_kv(FACT_DEDUPE_MIGRATION_KEY):
+        return None
+
+    if backups_dir is not None and store.db_path.exists():
+        await asyncio.to_thread(backup_database, store.db_path, backups_dir)
+
+    notes_deactivated = 0
+    memories_deleted = 0
+
+    async with store.write_tx() as conn:
+        seen_notes: set[tuple[str, str]] = set()
+        cur = await conn.execute(
+            "SELECT line_id, doc_key, fact FROM notebook WHERE active = 1 ORDER BY updated_at DESC, line_id DESC"
+        )
+        for row in await cur.fetchall():
+            key = (str(row["doc_key"]), fact_key(row["fact"]))
+            if key in seen_notes:
+                await conn.execute("UPDATE notebook SET active = 0 WHERE line_id = ?", (row["line_id"],))
+                notes_deactivated += 1
+            else:
+                seen_notes.add(key)
+
+        seen_memories: set[tuple[str, str]] = set()
+        cur = await conn.execute("SELECT id, scope, content FROM memories ORDER BY created_at DESC, id DESC")
+        for row in await cur.fetchall():
+            key = (str(row["scope"]), fact_key(row["content"]))
+            if key in seen_memories:
+                await conn.execute("DELETE FROM memories WHERE id = ?", (row["id"],))
+                memories_deleted += 1
+            else:
+                seen_memories.add(key)
+
+        summary = {
+            "notes_deactivated": notes_deactivated,
+            "memories_deleted": memories_deleted,
+            "ts": time.time(),
+        }
+        await conn.execute(
+            "INSERT INTO kv_settings (key, value_json, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            (FACT_DEDUPE_MIGRATION_KEY, json.dumps(summary, ensure_ascii=False), time.time()),
+        )
+
+    _log.info(
+        "Deduplicated facts: notes_deactivated=%d, memories_deleted=%d",
+        notes_deactivated,
+        memories_deleted,
+    )
+    return {"notes_deactivated": notes_deactivated, "memories_deleted": memories_deleted}
